@@ -1,0 +1,9 @@
+# Compiled binaries from the module's main packages (cmd/webhookd, examples/*).
+# `go build ./cmd/webhookd` etc. drop the binary in this dir — never commit it.
+/webhookd
+/publish
+/receiver
+# Test & coverage artifacts
+*.test
+*.out
+coverage.*
