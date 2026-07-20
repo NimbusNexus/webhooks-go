@@ -1,7 +1,8 @@
 # webhookd (Go)
 
 Official Go SDK for **NimbusNexus Webhooks** — publish events, manage your endpoints / keys /
-deliveries, and verify the webhooks you receive. Zero dependencies (standard library only); Go ≥ 1.22.
+deliveries, and verify the webhooks you receive. The core client is zero-dependency (standard library
+only); Go ≥ 1.25 (the optional outbox store drivers raise the module's minimum — see below).
 
 ```sh
 go get github.com/NimbusNexus/webhookd-go
@@ -11,8 +12,8 @@ go get github.com/NimbusNexus/webhookd-go
 import webhookd "github.com/NimbusNexus/webhookd-go"
 ```
 
-The import path ends in `/go`, but the package is named `webhookd` — import it with the explicit
-`webhookd` alias shown above.
+The module path's last element is `webhookd-go`, but the package is named `webhookd` — import it with
+the explicit `webhookd` alias shown above.
 
 ## Verify an incoming webhook (subscribers)
 

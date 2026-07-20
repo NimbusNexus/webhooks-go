@@ -21,8 +21,6 @@ type sigVector struct {
 
 func loadVectors(t *testing.T) []sigVector {
 	t.Helper()
-	// Vendored from the SDK monorepo's shared fixtures/ (the cross-language
-	// signature contract) into testdata/ so this mirror builds standalone.
 	path := filepath.Join("testdata", "signature-vectors.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
