@@ -1,19 +1,20 @@
-# webhookd (Go)
+# webhooks-go (Go)
 
 Official Go SDK for **NimbusNexus Webhooks** — publish events, manage your endpoints / keys /
 deliveries, and verify the webhooks you receive. The core client is zero-dependency (standard library
 only); Go ≥ 1.25 (the optional outbox store drivers raise the module's minimum — see below).
 
 ```sh
-go get github.com/NimbusNexus/webhookd-go
+go get github.com/NimbusNexus/webhooks-go
 ```
 
 ```go
-import webhooks "github.com/NimbusNexus/webhookd-go"
+import webhooks "github.com/NimbusNexus/webhooks-go"
 ```
 
-The module path's last element is `webhookd-go`, but the package is named `webhookd` — import it with
-the explicit `webhookd` alias shown above.
+The module path's last element is `webhooks-go`, but the package is named `webhooks` — the explicit
+alias above keeps that visible at the call site. Every symbol below is reached through it
+(`webhooks.Verify`, `webhooks.New`, and so on).
 
 ## Verify an incoming webhook (subscribers)
 
@@ -30,7 +31,7 @@ import (
 	"net/http"
 	"strconv"
 
-	webhooks "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhooks-go"
 )
 
 const signingSecret = "whsec_…" // the endpoint's signing secret (shown once on create)
@@ -42,17 +43,17 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var opts *webhookd.VerifyOptions
+	var opts *webhooks.VerifyOptions
 	if raw := r.Header.Get("X-Webhook-Timestamp"); raw != "" {
 		ts, perr := strconv.ParseInt(raw, 10, 64)
 		if perr != nil {
 			http.Error(w, "invalid signature", http.StatusBadRequest) // malformed timestamp
 			return
 		}
-		opts = &webhookd.VerifyOptions{Timestamp: &ts} // enforces the 300s replay window
+		opts = &webhooks.VerifyOptions{Timestamp: &ts} // enforces the 300s replay window
 	}
 
-	if !webhookd.Verify(signingSecret, body, r.Header.Get("X-Webhook-Signature"), opts) {
+	if !webhooks.Verify(signingSecret, body, r.Header.Get("X-Webhook-Signature"), opts) {
 		http.Error(w, "invalid signature", http.StatusBadRequest) // forged, tampered, or replayed
 		return
 	}
@@ -79,18 +80,18 @@ import (
 	"errors"
 	"fmt"
 
-	webhooks "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhooks-go"
 )
 
 func main() {
-	wh := webhookd.New("https://webhooks.example.com", "whsk_…")
+	wh := webhooks.New("https://webhooks.example.com", "whsk_…")
 
 	event, err := wh.Publish(context.Background(), "order.created",
 		map[string]any{"order_id": "ord_123", "total": 4200},
-		&webhookd.PublishOptions{IdempotencyKey: "order-123"}, // makes the publish safe to retry
+		&webhooks.PublishOptions{IdempotencyKey: "order-123"}, // makes the publish safe to retry
 	)
 	if err != nil {
-		var apiErr *webhookd.APIError
+		var apiErr *webhooks.APIError
 		if errors.As(err, &apiErr) {
 			fmt.Println(apiErr.StatusCode, apiErr.Code, apiErr.Message) // the {error:{code,message}} envelope
 		}
@@ -116,7 +117,7 @@ default project", so don't invent one.
 
 ```go
 wh.Publish(ctx, "order.created", payload, nil)                                    // default project
-wh.Publish(ctx, "order.created", payload, &webhookd.PublishOptions{ProjectID: "prj_3f9a"})
+wh.Publish(ctx, "order.created", payload, &webhooks.PublishOptions{ProjectID: "prj_3f9a"})
 ```
 
 ## Outbox / durable buffering (producers)
@@ -136,8 +137,8 @@ import (
 	"log"
 	"time"
 
-	webhooks "github.com/NimbusNexus/webhookd-go"
-	"github.com/NimbusNexus/webhookd-go/store/sqlite" // pulls in the SQLite driver
+	webhooks "github.com/NimbusNexus/webhooks-go"
+	"github.com/NimbusNexus/webhooks-go/store/sqlite" // pulls in the SQLite driver
 )
 
 func main() {
@@ -148,10 +149,10 @@ func main() {
 	}
 	defer store.Close()
 
-	wh := webhookd.New("https://webhooks.example.com", "whsk_…",
-		webhookd.WithStore(store),
-		webhookd.WithMaxAttempts(10), // retry budget before a record is parked dead (default 10)
-		webhookd.WithOnDead(func(r webhookd.Record) {
+	wh := webhooks.New("https://webhooks.example.com", "whsk_…",
+		webhooks.WithStore(store),
+		webhooks.WithMaxAttempts(10), // retry budget before a record is parked dead (default 10)
+		webhooks.WithOnDead(func(r webhooks.Record) {
 			log.Printf("dead-lettered %s: %v", r.ID, r.LastError)
 		}),
 	)
@@ -160,7 +161,7 @@ func main() {
 	// 2. Enqueue instead of Publish — writes to the store and returns at once, NO network call.
 	id, _ := wh.Enqueue(ctx, "order.created",
 		map[string]any{"order_id": "ord_123", "total": 4200},
-		&webhookd.EnqueueOptions{IdempotencyKey: "order-123"}) // id defaults to a fresh UUID v4
+		&webhooks.EnqueueOptions{IdempotencyKey: "order-123"}) // id defaults to a fresh UUID v4
 	_ = id
 
 	// 3a. Drain on demand — returns DrainResult{Sent, Failed, Remaining}:
@@ -180,12 +181,12 @@ with the *same* key and webhookd returns the original event without re-fanning-o
 keeps failing is retried with capped exponential backoff up to `WithMaxAttempts` (default 10), then
 flagged **dead** (never retried again, kept buffered) and handed to the optional `WithOnDead` hook.
 
-**Built-in stores** — pass one to `webhookd.WithStore(...)`:
+**Built-in stores** — pass one to `webhooks.WithStore(...)`:
 
 | Store | Durable? | Extra needed |
 | --- | --- | --- |
-| `webhookd.NewMemoryStore()` | No (in-process) | — (stdlib) |
-| `webhookd.NewFileStore(dir)` | Yes (per-record JSON, atomic write+rename) | — (stdlib) |
+| `webhooks.NewMemoryStore()` | No (in-process) | — (stdlib) |
+| `webhooks.NewFileStore(dir)` | Yes (per-record JSON, atomic write+rename) | — (stdlib) |
 | `sqlite.Open(path)` | Yes (transactional) | `store/sqlite` → `modernc.org/sqlite` (pure Go, no cgo) |
 | `redis.Open(redis.Options{URL})` | Yes (sorted-set + hash under a key prefix) | `store/redis` → `github.com/redis/go-redis/v9` |
 | `postgres.Open(ctx, postgres.Options{ConnString})` | Yes (`webhookd_outbox` table, name configurable) | `store/postgres` → `github.com/jackc/pgx/v5` |
@@ -197,7 +198,7 @@ outbox written by an older SDK in place — the pre-existing `project` slug colu
 `project_id` and relaxed to nullable, with the legacy `"default"` sentinel becoming `NULL` — so no
 buffered event is stranded.
 
-The core `webhookd` package stays stdlib-only. The three driver stores live in **subpackages** under
+The core `webhooks` package stays stdlib-only. The three driver stores live in **subpackages** under
 [`store/`](./store) (`store/sqlite`, `store/redis`, `store/postgres`); their third-party driver
 dependencies are only compiled into your binary if you actually import the subpackage, so a consumer
 who only uses the core SDK never pulls them in.
@@ -211,34 +212,34 @@ dead-letter queue from code (needs an **admin**-scoped key). Management methods 
 
 ```go
 ctx := context.Background()
-wh := webhookd.New("https://webhooks.example.com", "whsk_admin_…")
+wh := webhooks.New("https://webhooks.example.com", "whsk_admin_…")
 
 // --- Endpoints ---------------------------------------------------------------
 // Create a receiver — its signing secret is in the response exactly once, so persist it now.
-ep, _ := wh.CreateEndpoint(ctx, "https://your-app.example/webhooks", &webhookd.CreateEndpointOptions{
-	Subscriptions: []webhookd.Subscription{{MatchKind: "prefix", Pattern: "order."}},
+ep, _ := wh.CreateEndpoint(ctx, "https://your-app.example/webhooks", &webhooks.CreateEndpointOptions{
+	Subscriptions: []webhooks.Subscription{{MatchKind: "prefix", Pattern: "order."}},
 	Description:   ptr("orders service"),
 })
 endpointID, signingSecret := ep.Id, *ep.Secret
 
 wh.ListEndpoints(ctx, nil)                                                  // default project
-wh.ListEndpoints(ctx, &webhookd.ListEndpointsOptions{ProjectID: "prj_3f9a"}) // *Page[Endpoint]
+wh.ListEndpoints(ctx, &webhooks.ListEndpointsOptions{ProjectID: "prj_3f9a"}) // *Page[Endpoint]
 wh.GetEndpoint(ctx, endpointID)
 
 // PATCH — send only the keys you want to change (an omitted key is unchanged, an explicit nil clears):
-wh.UpdateEndpoint(ctx, endpointID, webhookd.Patch{"max_attempts": 10, "status": "disabled"})
+wh.UpdateEndpoint(ctx, endpointID, webhooks.Patch{"max_attempts": 10, "status": "disabled"})
 
 wh.RotateEndpointSecret(ctx, endpointID) // returns the new secret, once
 wh.EnableEndpoint(ctx, endpointID)       // recover an auto-disabled endpoint
 wh.DeleteEndpoint(ctx, endpointID)       // -> error only (204)
 
 // --- API keys ----------------------------------------------------------------
-key, _ := wh.CreateAPIKey(ctx, &webhookd.CreateAPIKeyOptions{Name: "ci-publisher", Scope: "publish"})
+key, _ := wh.CreateAPIKey(ctx, &webhooks.CreateAPIKeyOptions{Name: "ci-publisher", Scope: "publish"})
 fmt.Println(*key.Key)          // shown once
 wh.RevokeAPIKey(ctx, key.Id)   // -> error only (204)
 
 // --- Deliveries / dead-letter recovery ---------------------------------------
-dead, _ := wh.ListDeliveries(ctx, &webhookd.ListDeliveriesOptions{Status: "dead"})
+dead, _ := wh.ListDeliveries(ctx, &webhooks.ListDeliveriesOptions{Status: "dead"})
 for _, d := range dead.Items {
 	wh.Redeliver(ctx, d.Id)
 }
@@ -249,39 +250,44 @@ set are serialized. `ptr` above is a tiny helper — `func ptr[T any](v T) *T { 
 
 ## CLI
 
-The module ships a `webhookd` command that wraps this client and speaks the same v1 API.
+The module ships an `nn-webhooks` command that wraps this client and speaks the same v1 API. Full
+reference: [`cmd/nn-webhooks`](./cmd/nn-webhooks).
 
 ```sh
-go install github.com/NimbusNexus/webhookd-go/cmd/webhookd@latest
+brew install nimbusnexus/tap/nn-webhooks                            # macOS / Linux
+go install github.com/NimbusNexus/webhooks-go/cmd/nn-webhooks@latest # with a Go toolchain
 ```
 
 Configuration (base URL + API key) is resolved in order: the `--url` / `--api-key` flags, then the
-`WEBHOOKD_URL` / `WEBHOOKD_API_KEY` environment variables, then `~/.webhookd/config.json` (written by
-`webhookd configure`).
+`NN_WEBHOOKS_URL` / `NN_WEBHOOKS_API_KEY` environment variables, then the profile written by
+`nn-webhooks configure` to `$XDG_CONFIG_HOME/nn-webhooks/credentials.json` (mode `0600`). Credentials
+are stored as **named profiles**, so a second deployment is `--profile staging` rather than
+overwriting the first, and `nn-webhooks whoami` reports which source won.
 
 ```sh
-webhookd configure                                   # save base URL + API key to ~/.webhookd/config.json
-webhookd publish order.created --data '{"id":123}' --idempotency-key order-123
+nn-webhooks configure                                # prompts for base URL + API key
+nn-webhooks whoami                                   # what would be used, and where it came from
+nn-webhooks publish order.created --data '{"id":123}' --idempotency-key order-123
 
-webhookd endpoints create --url https://your-app.example/webhooks --subscribe prefix:order.
-webhookd endpoints list                    # the workspace's default project
-webhookd endpoints list --project-id prj_3f9a
-webhookd endpoints get <id>
-webhookd endpoints update <id> --set max_attempts=10 --set status=disabled  # values are JSON-coerced
-webhookd endpoints rotate-secret <id>
-webhookd endpoints enable <id>
-webhookd endpoints delete <id>
+nn-webhooks endpoints create --url https://your-app.example/webhooks --subscribe prefix:order.
+nn-webhooks endpoints list                    # the workspace's default project
+nn-webhooks endpoints list --project-id prj_3f9a
+nn-webhooks endpoints get <id>
+nn-webhooks endpoints update <id> --set max_attempts=10 --set status=disabled  # values are JSON-coerced
+nn-webhooks endpoints rotate-secret <id>
+nn-webhooks endpoints enable <id>
+nn-webhooks endpoints delete <id>
 
-webhookd keys create --name ci-publisher --scope publish --expires-in-days 90
-webhookd keys revoke <id>
+nn-webhooks keys create --name ci-publisher --scope publish --expires-in-days 90
+nn-webhooks keys revoke <id>
 
-webhookd deliveries list --status dead
-webhookd deliveries redeliver <id>
+nn-webhooks deliveries list --status dead
+nn-webhooks deliveries redeliver <id>
 
 # Verify a webhook — the raw body is read from stdin; prints "ok"/"failed" and exits 0/1:
-webhookd verify --secret whsec_… --signature "$SIG" --timestamp "$TS" < body.json
+nn-webhooks verify --secret whsec_… --signature "$SIG" --timestamp "$TS" < body.json
 
-webhookd version
+nn-webhooks version
 ```
 
 Successful results print as indented JSON to stdout; errors go to stderr and the process exits

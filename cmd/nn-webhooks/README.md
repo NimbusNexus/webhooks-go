@@ -11,11 +11,17 @@ reason it is Go: an operator is often on a box that has nothing on it.
 # macOS / Linux
 brew install nimbusnexus/tap/nn-webhooks
 
-# any platform — binaries + checksums on the Releases page
-curl -sSL https://github.com/NimbusNexus/webhooks-go/releases/latest/download/nn-webhooks_linux_amd64.tar.gz | tar xz
-
 # with a Go toolchain
 go install github.com/NimbusNexus/webhooks-go/cmd/nn-webhooks@latest
+```
+
+Any other platform: signed archives and a `checksums.txt` are attached to every
+[release](https://github.com/NimbusNexus/webhooks-go/releases). The archive name carries the
+version, so there is no version-agnostic download URL — take the one matching your platform:
+
+```bash
+curl -sSLO https://github.com/NimbusNexus/webhooks-go/releases/download/v0.5.1/nn-webhooks_0.5.1_linux_amd64.tar.gz
+tar xzf nn-webhooks_0.5.1_linux_amd64.tar.gz
 ```
 
 ## Configure
@@ -51,16 +57,30 @@ command is exactly what gets pasted into an issue.
 ## Commands
 
 ```bash
-nn-webhooks publish deploy.completed --payload '{"id":1}'
-nn-webhooks endpoints list
-nn-webhooks endpoints create --url https://example.com/hook --event-type deploy.completed
+nn-webhooks publish deploy.completed --data '{"id":1}' --idempotency-key deploy-1
+
+nn-webhooks endpoints list                       # add --project-id to scope it
+nn-webhooks endpoints create --url https://example.com/hook --subscribe prefix:deploy.
+nn-webhooks endpoints get ep_123
+nn-webhooks endpoints update ep_123 --set max_attempts=10 --set status=disabled
 nn-webhooks endpoints rotate-secret ep_123
-nn-webhooks endpoints verify ep_123
-nn-webhooks deliveries --status dead
+nn-webhooks endpoints enable ep_123              # recover an auto-disabled endpoint
+nn-webhooks endpoints delete ep_123
+
+nn-webhooks keys create --name ci --scope publish --expires-in-days 90
+nn-webhooks keys revoke key_123
+
+nn-webhooks deliveries list --status dead
 nn-webhooks deliveries redeliver dlv_456
-nn-webhooks keys create --name ci
-nn-webhooks verify --secret whsec_... --signature sha256=...   # verify a received webhook
+
+# Verify a received webhook — the raw body comes from stdin; prints "ok"/"failed", exits 0/1:
+nn-webhooks verify --secret whsec_... --signature sha256=... --timestamp "$TS" < body.json
 ```
+
+Subscriptions are `kind:pattern` and the flag repeats — `prefix:deploy.`, `exact:deploy.completed`,
+`suffix:.failed`. A value with no colon is a bare match kind with an empty pattern, which is how you
+subscribe to everything: `--subscribe all`. Values given to `--set` are JSON-coerced, falling back to
+a string; use `null` to clear a field.
 
 Everything prints JSON, so it pipes into `jq` without a `--format` flag to remember.
 

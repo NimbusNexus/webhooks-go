@@ -1,5 +1,5 @@
 // Command nn-webhooks is the official command-line interface for NimbusNexus Webhooks
-// (webhookd). It wraps the webhookd Go SDK client and speaks the same v1 API.
+// (webhookd). It wraps the Webhooks Go SDK client and speaks the same v1 API.
 //
 // Configuration (base URL + API key) is resolved in order:
 //  1. the global --url / --api-key flags,
@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-	// Global flags precede the subcommand: `webhookd [--url U] [--api-key K] <cmd> ...`.
+	// Global flags precede the subcommand: `nn-webhooks [--url U] [--api-key K] <cmd> ...`.
 	// The parser stops at the first non-flag token (the subcommand), so subcommand-local
 	// flags (including `endpoints create --url`, which is the endpoint URL) never collide.
 	globals := flag.NewFlagSet("nn-webhooks", flag.ContinueOnError)
@@ -244,8 +244,8 @@ func cmdWhoami(gURL, gKey, gProfile string) error {
 // ---------------------------------------------------------------------------
 
 func cmdPublish(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	usage := "Usage: webhookd publish <event_type> [--data JSON] [--idempotency-key K] [--project-id ID] [--source S]"
-	fs := newFlagSet("webhookd publish", usage)
+	usage := "Usage: nn-webhooks publish <event_type> [--data JSON] [--idempotency-key K] [--project-id ID] [--source S]"
+	fs := newFlagSet("nn-webhooks publish", usage)
 	data := fs.String("data", "", "event payload as a JSON object")
 	idempotency := fs.String("idempotency-key", "", "Idempotency-Key header")
 	projectID := fs.String("project-id", "", "project id, e.g. prj_3f9a… (default: the workspace's default project)")
@@ -255,7 +255,7 @@ func cmdPublish(ctx context.Context, args []string, gURL, gKey, gProfile string)
 	// through the FlagSet (showing every flag) before failing on the missing argument.
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		mustParse(fs, args)
-		fmt.Fprintln(os.Stderr, "webhookd publish: missing <event_type> argument")
+		fmt.Fprintln(os.Stderr, "nn-webhooks publish: missing <event_type> argument")
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -321,7 +321,7 @@ func cmdEndpoints(ctx context.Context, args []string, gURL, gKey, gProfile strin
 	case "enable":
 		return endpointsEnable(ctx, rest, gURL, gKey, gProfile)
 	default:
-		fmt.Fprintf(os.Stderr, "webhookd endpoints: unknown subcommand %q\n\n", sub)
+		fmt.Fprintf(os.Stderr, "nn-webhooks endpoints: unknown subcommand %q\n\n", sub)
 		printEndpointsUsage(os.Stderr)
 		os.Exit(2)
 	}
@@ -329,7 +329,7 @@ func cmdEndpoints(ctx context.Context, args []string, gURL, gKey, gProfile strin
 }
 
 func endpointsList(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd endpoints list", "Usage: webhookd endpoints list [--project-id ID] [--limit N] [--offset N]")
+	fs := newFlagSet("nn-webhooks endpoints list", "Usage: nn-webhooks endpoints list [--project-id ID] [--limit N] [--offset N]")
 	projectID := fs.String("project-id", "", "project id, e.g. prj_3f9a… (default: the workspace's default project)")
 	limit := fs.Int("limit", 0, "maximum results")
 	offset := fs.Int("offset", 0, "pagination offset")
@@ -356,7 +356,7 @@ func endpointsList(ctx context.Context, args []string, gURL, gKey, gProfile stri
 }
 
 func endpointsGet(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd endpoints get", "Usage: webhookd endpoints get <id>")
+	fs := newFlagSet("nn-webhooks endpoints get", "Usage: nn-webhooks endpoints get <id>")
 	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
@@ -369,7 +369,7 @@ func endpointsGet(ctx context.Context, args []string, gURL, gKey, gProfile strin
 }
 
 func endpointsCreate(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd endpoints create", "Usage: webhookd endpoints create --url URL [--project-id ID] [--subscribe kind:pattern]... [--max-attempts N] [--description D]")
+	fs := newFlagSet("nn-webhooks endpoints create", "Usage: nn-webhooks endpoints create --url URL [--project-id ID] [--subscribe kind:pattern]... [--max-attempts N] [--description D]")
 	epURL := fs.String("url", "", "endpoint target URL (required)")
 	projectID := fs.String("project-id", "", "project id, e.g. prj_3f9a… (default: the workspace's default project)")
 	var subs stringList
@@ -379,7 +379,7 @@ func endpointsCreate(ctx context.Context, args []string, gURL, gKey, gProfile st
 	mustParse(fs, args)
 
 	if *epURL == "" {
-		fmt.Fprintln(os.Stderr, "webhookd endpoints create: --url is required")
+		fmt.Fprintln(os.Stderr, "nn-webhooks endpoints create: --url is required")
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -412,7 +412,7 @@ func endpointsCreate(ctx context.Context, args []string, gURL, gKey, gProfile st
 }
 
 func endpointsUpdate(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd endpoints update", "Usage: webhookd endpoints update <id> --set key=value [--set key=value]...\n\nEach value is JSON-coerced (falling back to a string); use null to clear a field.")
+	fs := newFlagSet("nn-webhooks endpoints update", "Usage: nn-webhooks endpoints update <id> --set key=value [--set key=value]...\n\nEach value is JSON-coerced (falling back to a string); use null to clear a field.")
 	var sets stringList
 	fs.Var(&sets, "set", "field update as key=value (repeatable, JSON-coerced)")
 	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
@@ -445,7 +445,7 @@ func endpointsUpdate(ctx context.Context, args []string, gURL, gKey, gProfile st
 }
 
 func endpointsDelete(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd endpoints delete", "Usage: webhookd endpoints delete <id>")
+	fs := newFlagSet("nn-webhooks endpoints delete", "Usage: nn-webhooks endpoints delete <id>")
 	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
@@ -457,7 +457,7 @@ func endpointsDelete(ctx context.Context, args []string, gURL, gKey, gProfile st
 }
 
 func endpointsRotateSecret(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd endpoints rotate-secret", "Usage: webhookd endpoints rotate-secret <id>")
+	fs := newFlagSet("nn-webhooks endpoints rotate-secret", "Usage: nn-webhooks endpoints rotate-secret <id>")
 	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
@@ -470,7 +470,7 @@ func endpointsRotateSecret(ctx context.Context, args []string, gURL, gKey, gProf
 }
 
 func endpointsEnable(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd endpoints enable", "Usage: webhookd endpoints enable <id>")
+	fs := newFlagSet("nn-webhooks endpoints enable", "Usage: nn-webhooks endpoints enable <id>")
 	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
@@ -501,7 +501,7 @@ func cmdKeys(ctx context.Context, args []string, gURL, gKey, gProfile string) er
 	case "revoke":
 		return keysRevoke(ctx, rest, gURL, gKey, gProfile)
 	default:
-		fmt.Fprintf(os.Stderr, "webhookd keys: unknown subcommand %q\n\n", sub)
+		fmt.Fprintf(os.Stderr, "nn-webhooks keys: unknown subcommand %q\n\n", sub)
 		printKeysUsage(os.Stderr)
 		os.Exit(2)
 	}
@@ -509,7 +509,7 @@ func cmdKeys(ctx context.Context, args []string, gURL, gKey, gProfile string) er
 }
 
 func keysCreate(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd keys create", "Usage: webhookd keys create [--name N] [--scope admin|publish] [--expires-in-days N]")
+	fs := newFlagSet("nn-webhooks keys create", "Usage: nn-webhooks keys create [--name N] [--scope admin|publish] [--expires-in-days N]")
 	name := fs.String("name", "", "key name")
 	scope := fs.String("scope", "", "scope: admin|publish (default admin)")
 	expires := fs.Int("expires-in-days", 0, "expiry in days")
@@ -539,7 +539,7 @@ func keysCreate(ctx context.Context, args []string, gURL, gKey, gProfile string)
 }
 
 func keysRevoke(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd keys revoke", "Usage: webhookd keys revoke <id>")
+	fs := newFlagSet("nn-webhooks keys revoke", "Usage: nn-webhooks keys revoke <id>")
 	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
@@ -569,7 +569,7 @@ func cmdDeliveries(ctx context.Context, args []string, gURL, gKey, gProfile stri
 	case "redeliver":
 		return deliveriesRedeliver(ctx, rest, gURL, gKey, gProfile)
 	default:
-		fmt.Fprintf(os.Stderr, "webhookd deliveries: unknown subcommand %q\n\n", sub)
+		fmt.Fprintf(os.Stderr, "nn-webhooks deliveries: unknown subcommand %q\n\n", sub)
 		printDeliveriesUsage(os.Stderr)
 		os.Exit(2)
 	}
@@ -577,7 +577,7 @@ func cmdDeliveries(ctx context.Context, args []string, gURL, gKey, gProfile stri
 }
 
 func deliveriesList(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd deliveries list", "Usage: webhookd deliveries list [--status S] [--endpoint ID] [--event-type T] [--since TS] [--until TS] [--q Q] [--limit N] [--offset N]")
+	fs := newFlagSet("nn-webhooks deliveries list", "Usage: nn-webhooks deliveries list [--status S] [--endpoint ID] [--event-type T] [--since TS] [--until TS] [--q Q] [--limit N] [--offset N]")
 	status := fs.String("status", "", "delivery status filter")
 	endpoint := fs.String("endpoint", "", "endpoint id filter")
 	eventType := fs.String("event-type", "", "event type filter")
@@ -617,7 +617,7 @@ func deliveriesList(ctx context.Context, args []string, gURL, gKey, gProfile str
 }
 
 func deliveriesRedeliver(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("webhookd deliveries redeliver", "Usage: webhookd deliveries redeliver <id>")
+	fs := newFlagSet("nn-webhooks deliveries redeliver", "Usage: nn-webhooks deliveries redeliver <id>")
 	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
@@ -766,14 +766,15 @@ func printJSON(v any) error {
 // ---------------------------------------------------------------------------
 
 func printMainUsage(w io.Writer) {
-	fmt.Fprint(w, `webhookd - CLI for NimbusNexus Webhooks (webhookd)
+	fmt.Fprint(w, `nn-webhooks - CLI for NimbusNexus Webhooks (webhookd)
 
 Usage:
-  webhookd [--url URL] [--api-key KEY] <command> [arguments]
+  nn-webhooks [--url URL] [--api-key KEY] <command> [arguments]
 
 Global flags:
-  --url URL         webhookd base URL (env NN_WEBHOOKS_URL, or config file)
+  --url URL         Webhooks base URL (env NN_WEBHOOKS_URL, or config file)
   --api-key KEY     API key           (env NN_WEBHOOKS_API_KEY, or config file)
+  --profile NAME    Named credential profile (env NN_WEBHOOKS_PROFILE, default "default")
 
 Commands:
   configure     Save base URL + API key to $XDG_CONFIG_HOME/nn-webhooks/credentials.json
@@ -784,7 +785,7 @@ Commands:
   verify        Verify a webhook signature (body read from stdin)
   version       Print the SDK/CLI version
 
-Run "webhookd <command> --help" for command-specific help.
+Run "nn-webhooks <command> --help" for command-specific help.
 
 Configuration is resolved in order: flags, then the NN_WEBHOOKS_URL / NN_WEBHOOKS_API_KEY
 environment variables, then $XDG_CONFIG_HOME/nn-webhooks/credentials.json.
@@ -792,7 +793,7 @@ environment variables, then $XDG_CONFIG_HOME/nn-webhooks/credentials.json.
 }
 
 func printEndpointsUsage(w io.Writer) {
-	fmt.Fprint(w, `Usage: webhookd endpoints <subcommand> [arguments]
+	fmt.Fprint(w, `Usage: nn-webhooks endpoints <subcommand> [arguments]
 
 Subcommands:
   list                                 List endpoints
@@ -803,28 +804,28 @@ Subcommands:
   rotate-secret <id>                   Rotate the signing secret
   enable <id>                          Re-enable a disabled endpoint
 
-Run "webhookd endpoints <subcommand> --help" for details.
+Run "nn-webhooks endpoints <subcommand> --help" for details.
 `)
 }
 
 func printKeysUsage(w io.Writer) {
-	fmt.Fprint(w, `Usage: webhookd keys <subcommand> [arguments]
+	fmt.Fprint(w, `Usage: nn-webhooks keys <subcommand> [arguments]
 
 Subcommands:
   create [--name N] [--scope admin|publish] [--expires-in-days N]   Create an API key
   revoke <id>                                                       Revoke an API key
 
-Run "webhookd keys <subcommand> --help" for details.
+Run "nn-webhooks keys <subcommand> --help" for details.
 `)
 }
 
 func printDeliveriesUsage(w io.Writer) {
-	fmt.Fprint(w, `Usage: webhookd deliveries <subcommand> [arguments]
+	fmt.Fprint(w, `Usage: nn-webhooks deliveries <subcommand> [arguments]
 
 Subcommands:
   list [filters]      List deliveries (--status, --endpoint, --event-type, --since, --until, --q, --limit)
   redeliver <id>      Re-enqueue a delivery for another attempt
 
-Run "webhookd deliveries <subcommand> --help" for details.
+Run "nn-webhooks deliveries <subcommand> --help" for details.
 `)
 }
