@@ -44,7 +44,7 @@ For CI, skip the file entirely:
 ```bash
 export NN_WEBHOOKS_URL=https://api.webhooks.example.com
 export NN_WEBHOOKS_API_KEY=whk_...
-nn-webhooks deliveries --status dead
+nn-webhooks deliveries list --status dead
 ```
 
 Precedence is `--api-key` > `$NN_WEBHOOKS_API_KEY` > profile, and **`whoami` reports which one
