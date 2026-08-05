@@ -1,4 +1,4 @@
-// Package storetest provides a shared Store contract test, parametrized over any webhookd.Store
+// Package storetest provides a shared Store contract test, parametrized over any webhooks.Store
 // implementation. Each store package calls RunContract with a factory that builds a fresh, empty
 // store; the durable stores that need a server (Redis, Postgres) skip cleanly when their env var is
 // unset (that gating lives in each store's own _test.go, not here).
@@ -9,28 +9,30 @@ import (
 	"testing"
 	"time"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhooks-go"
 )
 
 // Factory builds a fresh, empty Store for one subtest. Register a t.Cleanup to close/reset it.
-type Factory func(t *testing.T) webhookd.Store
+type Factory func(t *testing.T) webhooks.Store
 
 func strptr(s string) *string { return &s }
 
-func rec(id string, createdAt, nextAttemptAt time.Time) webhookd.Record {
-	return webhookd.Record{
+// testProjectID is an opaque project id (the wire shape since webhookd dropped project slugs).
+const testProjectID = "prj_3f9a1c7b"
+
+func rec(id string, createdAt, nextAttemptAt time.Time) webhooks.Record {
+	return webhooks.Record{
 		ID:            id,
 		EventType:     "order.created",
 		Payload:       map[string]any{"id": id},
-		Environment:   "prod",
-		Application:   "default",
+		ProjectID:     testProjectID,
 		CreatedAt:     createdAt,
 		Attempts:      0,
 		NextAttemptAt: nextAttemptAt,
 	}
 }
 
-func mustSize(t *testing.T, ctx context.Context, s webhookd.Store, want int) {
+func mustSize(t *testing.T, ctx context.Context, s webhooks.Store, want int) {
 	t.Helper()
 	got, err := s.Size(ctx)
 	if err != nil {
@@ -41,7 +43,7 @@ func mustSize(t *testing.T, ctx context.Context, s webhookd.Store, want int) {
 	}
 }
 
-func mustList(t *testing.T, ctx context.Context, s webhookd.Store, limit int) []webhookd.Record {
+func mustList(t *testing.T, ctx context.Context, s webhooks.Store, limit int) []webhooks.Record {
 	t.Helper()
 	rows, err := s.ListPending(ctx, limit)
 	if err != nil {
@@ -77,11 +79,41 @@ func RunContract(t *testing.T, newStore Factory) {
 		if got.Attempts != 5 || got.EventType != "order.updated" {
 			t.Errorf("upsert not applied: %+v", got)
 		}
+		// Guards the column ORDER, not just the value. Renaming project -> project_id (like
+		// environment -> project before it) kept it in slot 4 of the SQLite INSERT/SELECT and in the
+		// Postgres params; project_id and source are both TEXT, so a transposition between the
+		// SELECT list and the Scan targets would leave every other assertion here green. Postgres
+		// and Redis SKIP without their URLs set, which makes SQLite the only store whose SQL
+		// actually runs in CI.
+		if got.ProjectID != testProjectID {
+			t.Errorf("project_id = %q, want %q (column order may be transposed)", got.ProjectID, testProjectID)
+		}
 		if got.LastError == nil || *got.LastError != "prior boom" {
 			t.Errorf("last_error = %v, want prior boom", got.LastError)
 		}
 		if v, ok := got.Payload["changed"].(bool); !ok || !v {
 			t.Errorf("payload = %v, want {changed:true}", got.Payload)
+		}
+	})
+
+	t.Run("EmptyProjectIDRoundTrips", func(t *testing.T) {
+		// An unset ProjectID means "the workspace's default project" — the id is opaque and per-workspace,
+		// so there is no client-side sentinel to store. The SQL stores persist it as NULL (the
+		// column is nullable) and must hand it back as the empty string, NOT as some literal.
+		ctx := context.Background()
+		s := newStore(t)
+		now := time.Now()
+		r := rec("no-project", now, now)
+		r.ProjectID = ""
+		if err := s.Save(ctx, r); err != nil {
+			t.Fatalf("Save with empty ProjectID: %v", err)
+		}
+		rows := mustList(t, ctx, s, 10)
+		if len(rows) != 1 {
+			t.Fatalf("rows = %d, want 1", len(rows))
+		}
+		if rows[0].ProjectID != "" {
+			t.Errorf("project_id = %q, want \"\" (default project stays unset)", rows[0].ProjectID)
 		}
 	})
 
@@ -201,7 +233,7 @@ func RunContract(t *testing.T, newStore Factory) {
 	})
 }
 
-func ids(rows []webhookd.Record) []string {
+func ids(rows []webhooks.Record) []string {
 	out := make([]string, len(rows))
 	for i, r := range rows {
 		out[i] = r.ID

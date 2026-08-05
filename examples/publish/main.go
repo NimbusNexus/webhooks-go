@@ -12,7 +12,7 @@ import (
 	"log"
 	"os"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhooks-go"
 )
 
 func main() {
@@ -22,16 +22,16 @@ func main() {
 		log.Fatal("set WEBHOOKD_URL and WEBHOOKD_API_KEY")
 	}
 
-	wh := webhookd.New(baseURL, apiKey)
+	wh := webhooks.New(baseURL, apiKey)
 
 	event, err := wh.Publish(
 		context.Background(),
 		"order.created",
 		map[string]any{"order_id": "ord_123", "total": 4200},
-		&webhookd.PublishOptions{IdempotencyKey: "order-123-created"}, // makes the publish safe to retry
+		&webhooks.PublishOptions{IdempotencyKey: "order-123-created"}, // makes the publish safe to retry
 	)
 	if err != nil {
-		var apiErr *webhookd.APIError
+		var apiErr *webhooks.APIError
 		if errors.As(err, &apiErr) {
 			log.Fatalf("publish failed: [%d %s] %s", apiErr.StatusCode, apiErr.Code, apiErr.Message)
 		}

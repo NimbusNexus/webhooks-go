@@ -9,7 +9,7 @@ go get github.com/NimbusNexus/webhookd-go
 ```
 
 ```go
-import webhookd "github.com/NimbusNexus/webhookd-go"
+import webhooks "github.com/NimbusNexus/webhookd-go"
 ```
 
 The module path's last element is `webhookd-go`, but the package is named `webhookd` — import it with
@@ -30,7 +30,7 @@ import (
 	"net/http"
 	"strconv"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhookd-go"
 )
 
 const signingSecret = "whsec_…" // the endpoint's signing secret (shown once on create)
@@ -79,7 +79,7 @@ import (
 	"errors"
 	"fmt"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhookd-go"
 )
 
 func main() {
@@ -106,6 +106,19 @@ are retried with capped exponential backoff (a `429` honours `Retry-After`); oth
 return an `*APIError` carrying the stable `{error:{code,message}}` envelope. Every method takes a
 `context.Context` first.
 
+### Projects
+
+A project is addressed by its **id** — an opaque, per-workspace string like `prj_3f9a…`. There are no
+project slugs. `PublishOptions`, `EnqueueOptions`, `CreateEndpointOptions` and `ListEndpointsOptions`
+all take an optional `ProjectID`; **leave it empty to target the workspace's default project** — the SDK
+then omits the field entirely and the server resolves it. There is no client-side stand-in for "the
+default project", so don't invent one.
+
+```go
+wh.Publish(ctx, "order.created", payload, nil)                                    // default project
+wh.Publish(ctx, "order.created", payload, &webhookd.PublishOptions{ProjectID: "prj_3f9a"})
+```
+
 ## Outbox / durable buffering (producers)
 
 `Publish` calls webhookd synchronously — if webhookd is unreachable it returns an error and the event
@@ -123,7 +136,7 @@ import (
 	"log"
 	"time"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhookd-go"
 	"github.com/NimbusNexus/webhookd-go/store/sqlite" // pulls in the SQLite driver
 )
 
@@ -177,6 +190,13 @@ flagged **dead** (never retried again, kept buffered) and handed to the optional
 | `redis.Open(redis.Options{URL})` | Yes (sorted-set + hash under a key prefix) | `store/redis` → `github.com/redis/go-redis/v9` |
 | `postgres.Open(ctx, postgres.Options{ConnString})` | Yes (`webhookd_outbox` table, name configurable) | `store/postgres` → `github.com/jackc/pgx/v5` |
 
+A buffered `Record` carries an optional `ProjectID`; an empty one means the workspace's default project
+and is persisted as SQL `NULL` (the `project_id` column is nullable), so `Drain` omits `project_id`
+from the publish body and the server resolves the project. `sqlite.Open` / `postgres.Open` upgrade an
+outbox written by an older SDK in place — the pre-existing `project` slug column is renamed to
+`project_id` and relaxed to nullable, with the legacy `"default"` sentinel becoming `NULL` — so no
+buffered event is stranded.
+
 The core `webhookd` package stays stdlib-only. The three driver stores live in **subpackages** under
 [`store/`](./store) (`store/sqlite`, `store/redis`, `store/postgres`); their third-party driver
 dependencies are only compiled into your binary if you actually import the subpackage, so a consumer
@@ -201,7 +221,8 @@ ep, _ := wh.CreateEndpoint(ctx, "https://your-app.example/webhooks", &webhookd.C
 })
 endpointID, signingSecret := ep.Id, *ep.Secret
 
-wh.ListEndpoints(ctx, &webhookd.ListEndpointsOptions{Environment: "prod"}) // *Page[Endpoint]
+wh.ListEndpoints(ctx, nil)                                                  // default project
+wh.ListEndpoints(ctx, &webhookd.ListEndpointsOptions{ProjectID: "prj_3f9a"}) // *Page[Endpoint]
 wh.GetEndpoint(ctx, endpointID)
 
 // PATCH — send only the keys you want to change (an omitted key is unchanged, an explicit nil clears):
@@ -243,7 +264,8 @@ webhookd configure                                   # save base URL + API key t
 webhookd publish order.created --data '{"id":123}' --idempotency-key order-123
 
 webhookd endpoints create --url https://your-app.example/webhooks --subscribe prefix:order.
-webhookd endpoints list --env prod
+webhookd endpoints list                    # the workspace's default project
+webhookd endpoints list --project-id prj_3f9a
 webhookd endpoints get <id>
 webhookd endpoints update <id> --set max_attempts=10 --set status=disabled  # values are JSON-coerced
 webhookd endpoints rotate-secret <id>

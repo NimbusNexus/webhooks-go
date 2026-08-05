@@ -8,7 +8,7 @@
 // (unix seconds). A subscriber MUST verify the signature to prove the request genuinely came from
 // webhookd and was not tampered with. This mirrors delivery_core.webhook_outbox.{sign,verify}
 // byte-for-byte.
-package webhookd
+package webhooks
 
 import (
 	"crypto/hmac"

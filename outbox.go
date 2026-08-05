@@ -1,4 +1,4 @@
-package webhookd
+package webhooks
 
 import (
 	"context"
@@ -22,13 +22,13 @@ var deadNextAttempt = time.Date(9999, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 // Record is one buffered event. ID doubles as the webhookd Idempotency-Key (caller-supplied or a
 // generated UUID v4), so re-saving the same ID (an idempotent enqueue) overwrites, and re-draining
-// after a crash never double-publishes.
+// after a crash never double-publishes. An EMPTY ProjectID means "the workspace's default project": it
+// is stored as SQL NULL and omitted from the publish body on Drain.
 type Record struct {
 	ID            string         `json:"id"`
 	EventType     string         `json:"event_type"`
 	Payload       map[string]any `json:"payload"`
-	Environment   string         `json:"environment"`
-	Application   string         `json:"application"`
+	ProjectID     string         `json:"project_id,omitempty"`
 	Source        *string        `json:"source"`
 	CreatedAt     time.Time      `json:"created_at"`
 	Attempts      int            `json:"attempts"`

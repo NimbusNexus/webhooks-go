@@ -1,13 +1,13 @@
-// Command webhookd is the official command-line interface for NimbusNexus Webhooks
+// Command nn-webhooks is the official command-line interface for NimbusNexus Webhooks
 // (webhookd). It wraps the webhookd Go SDK client and speaks the same v1 API.
 //
 // Configuration (base URL + API key) is resolved in order:
 //  1. the global --url / --api-key flags,
-//  2. the WEBHOOKD_URL / WEBHOOKD_API_KEY environment variables,
-//  3. the config file at ~/.webhookd/config.json (written by `webhookd configure`).
+//  2. the NN_WEBHOOKS_URL / NN_WEBHOOKS_API_KEY environment variables,
+//  3. the config file at $XDG_CONFIG_HOME/nn-webhooks/credentials.json (written by `nn-webhooks configure`).
 //
 // Successful results are printed as indented JSON to stdout; errors go to stderr and
-// the process exits non-zero. An *webhookd.APIError is rendered as "code: message".
+// the process exits non-zero. An *webhooks.APIError is rendered as "code: message".
 package main
 
 import (
@@ -20,21 +20,21 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhooks-go"
 )
 
 func main() {
 	// Global flags precede the subcommand: `webhookd [--url U] [--api-key K] <cmd> ...`.
 	// The parser stops at the first non-flag token (the subcommand), so subcommand-local
 	// flags (including `endpoints create --url`, which is the endpoint URL) never collide.
-	globals := flag.NewFlagSet("webhookd", flag.ContinueOnError)
+	globals := flag.NewFlagSet("nn-webhooks", flag.ContinueOnError)
 	globals.Usage = func() { printMainUsage(os.Stderr) }
-	urlFlag := globals.String("url", "", "webhookd base URL (overrides env/config)")
+	urlFlag := globals.String("url", "", "Webhooks base URL (overrides env/config)")
 	keyFlag := globals.String("api-key", "", "API key (overrides env/config)")
+	profileFlag := globals.String("profile", "", "named credential profile (default \"default\")")
 	if err := globals.Parse(os.Args[1:]); err != nil {
 		if err == flag.ErrHelp {
 			os.Exit(0)
@@ -63,17 +63,19 @@ func main() {
 		cmdVerify(rest) // handles its own exit codes (0 ok / 1 failed / 2 usage)
 		return
 	case "configure":
-		err = cmdConfigure(rest, *urlFlag, *keyFlag)
+		err = cmdConfigure(rest, *urlFlag, *keyFlag, *profileFlag)
+	case "whoami":
+		err = cmdWhoami(*urlFlag, *keyFlag, *profileFlag)
 	case "publish":
-		err = cmdPublish(ctx, rest, *urlFlag, *keyFlag)
+		err = cmdPublish(ctx, rest, *urlFlag, *keyFlag, *profileFlag)
 	case "endpoints":
-		err = cmdEndpoints(ctx, rest, *urlFlag, *keyFlag)
+		err = cmdEndpoints(ctx, rest, *urlFlag, *keyFlag, *profileFlag)
 	case "keys":
-		err = cmdKeys(ctx, rest, *urlFlag, *keyFlag)
+		err = cmdKeys(ctx, rest, *urlFlag, *keyFlag, *profileFlag)
 	case "deliveries":
-		err = cmdDeliveries(ctx, rest, *urlFlag, *keyFlag)
+		err = cmdDeliveries(ctx, rest, *urlFlag, *keyFlag, *profileFlag)
 	default:
-		fmt.Fprintf(os.Stderr, "webhookd: unknown command %q\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "nn-webhooks: unknown command %q\n\n", cmd)
 		printMainUsage(os.Stderr)
 		os.Exit(2)
 	}
@@ -85,11 +87,11 @@ func main() {
 
 // fail prints err to stderr and exits non-zero. An *APIError renders as "code: message".
 func fail(err error) {
-	var apiErr *webhookd.APIError
+	var apiErr *webhooks.APIError
 	if errors.As(err, &apiErr) {
 		fmt.Fprintf(os.Stderr, "%s: %s\n", apiErr.Code, apiErr.Message)
 	} else {
-		fmt.Fprintf(os.Stderr, "webhookd: %s\n", err.Error())
+		fmt.Fprintf(os.Stderr, "nn-webhooks: %s\n", err.Error())
 	}
 	os.Exit(1)
 }
@@ -98,8 +100,27 @@ func fail(err error) {
 // version
 // ---------------------------------------------------------------------------
 
+// Set by the release build via -ldflags; empty for a plain `go build` or `go install`.
+//
+// Both are reported, because they answer different questions and can legitimately differ: `version`
+// is the RELEASE this binary came from, `sdk` is the client library compiled into it. A binary
+// built from an untagged commit has no release to name, so it falls back to the SDK constant
+// rather than printing "dev" and losing the only real information available.
+var (
+	version string
+	commit  string
+)
+
 func cmdVersion() error {
-	return printJSON(map[string]string{"version": webhookd.Version})
+	v := version
+	if v == "" {
+		v = webhooks.Version + "+source"
+	}
+	out := map[string]string{"version": v, "sdk": webhooks.Version}
+	if commit != "" {
+		out["commit"] = commit
+	}
+	return printJSON(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -107,25 +128,25 @@ func cmdVersion() error {
 // ---------------------------------------------------------------------------
 
 func cmdVerify(args []string) {
-	fs := newFlagSet("webhookd verify", "Usage: webhookd verify --secret S --signature SIG [--timestamp TS]\n\nReads the raw webhook body from stdin, prints \"ok\"/\"failed\", and exits 0/1.")
+	fs := newFlagSet("nn-webhooks verify", "Usage: nn-webhooks verify --secret S --signature SIG [--timestamp TS]\n\nReads the raw webhook body from stdin, prints \"ok\"/\"failed\", and exits 0/1.")
 	secret := fs.String("secret", "", "signing secret (required)")
 	signature := fs.String("signature", "", "X-Webhook-Signature header value (required)")
 	timestamp := fs.String("timestamp", "", "X-Webhook-Timestamp header value (unix seconds)")
 	mustParse(fs, args)
 
 	if *secret == "" || *signature == "" {
-		fmt.Fprintln(os.Stderr, "webhookd verify: --secret and --signature are required")
+		fmt.Fprintln(os.Stderr, "nn-webhooks verify: --secret and --signature are required")
 		fs.Usage()
 		os.Exit(2)
 	}
 
 	body, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "webhookd verify: failed to read body from stdin: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nn-webhooks verify: failed to read body from stdin: %v\n", err)
 		os.Exit(2)
 	}
 
-	var opts *webhookd.VerifyOptions
+	var opts *webhooks.VerifyOptions
 	if *timestamp != "" {
 		ts, perr := strconv.ParseInt(*timestamp, 10, 64)
 		if perr != nil {
@@ -133,10 +154,10 @@ func cmdVerify(args []string) {
 			fmt.Println("failed")
 			os.Exit(1)
 		}
-		opts = &webhookd.VerifyOptions{Timestamp: &ts}
+		opts = &webhooks.VerifyOptions{Timestamp: &ts}
 	}
 
-	if webhookd.Verify(*secret, body, *signature, opts) {
+	if webhooks.Verify(*secret, body, *signature, opts) {
 		fmt.Println("ok")
 		os.Exit(0)
 	}
@@ -148,9 +169,9 @@ func cmdVerify(args []string) {
 // configure
 // ---------------------------------------------------------------------------
 
-func cmdConfigure(args []string, gURL, gKey string) error {
-	fs := newFlagSet("webhookd configure", "Usage: webhookd configure [--url URL] [--api-key KEY]\n\nWrites the base URL + API key to ~/.webhookd/config.json (mode 0600).\nMissing values are prompted for interactively.")
-	urlFlag := fs.String("url", "", "webhookd base URL")
+func cmdConfigure(args []string, gURL, gKey, gProfile string) error {
+	fs := newFlagSet("nn-webhooks configure", "Usage: nn-webhooks configure [--url URL] [--api-key KEY]\n\nWrites the base URL + API key to $XDG_CONFIG_HOME/nn-webhooks/credentials.json (mode 0600).\nMissing values are prompted for interactively.")
+	urlFlag := fs.String("url", "", "Webhooks base URL")
 	keyFlag := fs.String("api-key", "", "API key")
 	mustParse(fs, args)
 
@@ -159,7 +180,7 @@ func cmdConfigure(args []string, gURL, gKey string) error {
 
 	reader := bufio.NewReader(os.Stdin)
 	if baseURL == "" {
-		v, err := promptLine(reader, "webhookd base URL: ")
+		v, err := promptLine(reader, "Webhooks base URL: ")
 		if err != nil {
 			return err
 		}
@@ -176,23 +197,58 @@ func cmdConfigure(args []string, gURL, gKey string) error {
 		return errors.New("both base URL and API key are required")
 	}
 
-	path, err := saveConfigFile(fileConfig{URL: baseURL, APIKey: apiKey})
+	// Writes one PROFILE rather than a flat file, so a second deployment is `--profile staging`
+	// instead of overwriting the first — which is how a production key ends up aimed at staging.
+	name := profileName(gProfile)
+	st, err := loadStore()
 	if err != nil {
 		return err
 	}
-	return printJSON(map[string]string{"url": baseURL, "config_path": path})
+	st.Profiles[name] = profile{URL: baseURL, Kind: "api_key", APIKey: apiKey}
+	path, err := saveStore(st)
+	if err != nil {
+		return err
+	}
+	return printJSON(map[string]string{"url": baseURL, "profile": name, "config_path": path})
+}
+
+// cmdWhoami reports which credential would be used, and WHERE it came from.
+//
+// The SOURCE is the point, not the fact. A stale $NN_WEBHOOKS_API_KEY silently shadowing the
+// profile someone just wrote is the common confusion, and "configured" on its own cannot explain
+// it — the precedence that makes CI work with no config file is the same precedence that makes
+// this happen.
+//
+// The key itself is never printed, only its last four characters: the output of a diagnostic
+// command is exactly what gets pasted into an issue or a chat log.
+func cmdWhoami(gURL, gKey, gProfile string) error {
+	cred, err := resolveCredentials(gURL, gKey, gProfile)
+	if err != nil {
+		return err
+	}
+	suffix := cred.APIKey
+	if len(suffix) > 4 {
+		suffix = suffix[len(suffix)-4:]
+	}
+	return printJSON(map[string]string{
+		"profile":    cred.Profile,
+		"url":        cred.URL,
+		"kind":       cred.Kind,
+		"source":     cred.Source,
+		"key_suffix": suffix,
+	})
 }
 
 // ---------------------------------------------------------------------------
 // publish
 // ---------------------------------------------------------------------------
 
-func cmdPublish(ctx context.Context, args []string, gURL, gKey string) error {
-	usage := "Usage: webhookd publish <event_type> [--data JSON] [--idempotency-key K] [--env E] [--source S]"
+func cmdPublish(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
+	usage := "Usage: webhookd publish <event_type> [--data JSON] [--idempotency-key K] [--project-id ID] [--source S]"
 	fs := newFlagSet("webhookd publish", usage)
 	data := fs.String("data", "", "event payload as a JSON object")
 	idempotency := fs.String("idempotency-key", "", "Idempotency-Key header")
-	env := fs.String("env", "", "environment (default prod)")
+	projectID := fs.String("project-id", "", "project id, e.g. prj_3f9a… (default: the workspace's default project)")
 	source := fs.String("source", "", "event source")
 
 	// event_type is the leading positional; a flag-first invocation still routes --help
@@ -213,9 +269,9 @@ func cmdPublish(ctx context.Context, args []string, gURL, gKey string) error {
 		}
 	}
 
-	opts := &webhookd.PublishOptions{}
-	if *env != "" {
-		opts.Environment = *env
+	opts := &webhooks.PublishOptions{}
+	if *projectID != "" {
+		opts.ProjectID = *projectID
 	}
 	if flagProvided(fs, "source") {
 		s := *source
@@ -225,7 +281,7 @@ func cmdPublish(ctx context.Context, args []string, gURL, gKey string) error {
 		opts.IdempotencyKey = *idempotency
 	}
 
-	client, err := newClient(gURL, gKey)
+	client, err := newClient(gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -240,7 +296,7 @@ func cmdPublish(ctx context.Context, args []string, gURL, gKey string) error {
 // endpoints
 // ---------------------------------------------------------------------------
 
-func cmdEndpoints(ctx context.Context, args []string, gURL, gKey string) error {
+func cmdEndpoints(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	if len(args) == 0 {
 		printEndpointsUsage(os.Stderr)
 		os.Exit(2)
@@ -251,19 +307,19 @@ func cmdEndpoints(ctx context.Context, args []string, gURL, gKey string) error {
 		printEndpointsUsage(os.Stdout)
 		return nil
 	case "list":
-		return endpointsList(ctx, rest, gURL, gKey)
+		return endpointsList(ctx, rest, gURL, gKey, gProfile)
 	case "get":
-		return endpointsGet(ctx, rest, gURL, gKey)
+		return endpointsGet(ctx, rest, gURL, gKey, gProfile)
 	case "create":
-		return endpointsCreate(ctx, rest, gURL, gKey)
+		return endpointsCreate(ctx, rest, gURL, gKey, gProfile)
 	case "update":
-		return endpointsUpdate(ctx, rest, gURL, gKey)
+		return endpointsUpdate(ctx, rest, gURL, gKey, gProfile)
 	case "delete":
-		return endpointsDelete(ctx, rest, gURL, gKey)
+		return endpointsDelete(ctx, rest, gURL, gKey, gProfile)
 	case "rotate-secret":
-		return endpointsRotateSecret(ctx, rest, gURL, gKey)
+		return endpointsRotateSecret(ctx, rest, gURL, gKey, gProfile)
 	case "enable":
-		return endpointsEnable(ctx, rest, gURL, gKey)
+		return endpointsEnable(ctx, rest, gURL, gKey, gProfile)
 	default:
 		fmt.Fprintf(os.Stderr, "webhookd endpoints: unknown subcommand %q\n\n", sub)
 		printEndpointsUsage(os.Stderr)
@@ -272,23 +328,23 @@ func cmdEndpoints(ctx context.Context, args []string, gURL, gKey string) error {
 	return nil
 }
 
-func endpointsList(ctx context.Context, args []string, gURL, gKey string) error {
-	fs := newFlagSet("webhookd endpoints list", "Usage: webhookd endpoints list [--env E] [--limit N] [--offset N]")
-	env := fs.String("env", "", "environment (default prod)")
+func endpointsList(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
+	fs := newFlagSet("webhookd endpoints list", "Usage: webhookd endpoints list [--project-id ID] [--limit N] [--offset N]")
+	projectID := fs.String("project-id", "", "project id, e.g. prj_3f9a… (default: the workspace's default project)")
 	limit := fs.Int("limit", 0, "maximum results")
 	offset := fs.Int("offset", 0, "pagination offset")
 	mustParse(fs, args)
 
-	opts := &webhookd.ListEndpointsOptions{Offset: *offset}
-	if *env != "" {
-		opts.Environment = *env
+	opts := &webhooks.ListEndpointsOptions{Offset: *offset}
+	if *projectID != "" {
+		opts.ProjectID = *projectID
 	}
 	if *limit > 0 {
 		l := *limit
 		opts.Limit = &l
 	}
 
-	client, err := newClient(gURL, gKey)
+	client, err := newClient(gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -299,9 +355,9 @@ func endpointsList(ctx context.Context, args []string, gURL, gKey string) error 
 	return printJSON(page)
 }
 
-func endpointsGet(ctx context.Context, args []string, gURL, gKey string) error {
+func endpointsGet(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	fs := newFlagSet("webhookd endpoints get", "Usage: webhookd endpoints get <id>")
-	id, client, err := requireIDAndClient(fs, args, gURL, gKey)
+	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -312,10 +368,10 @@ func endpointsGet(ctx context.Context, args []string, gURL, gKey string) error {
 	return printJSON(ep)
 }
 
-func endpointsCreate(ctx context.Context, args []string, gURL, gKey string) error {
-	fs := newFlagSet("webhookd endpoints create", "Usage: webhookd endpoints create --url URL [--env E] [--subscribe kind:pattern]... [--max-attempts N] [--description D]")
+func endpointsCreate(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
+	fs := newFlagSet("webhookd endpoints create", "Usage: webhookd endpoints create --url URL [--project-id ID] [--subscribe kind:pattern]... [--max-attempts N] [--description D]")
 	epURL := fs.String("url", "", "endpoint target URL (required)")
-	env := fs.String("env", "", "environment (default prod)")
+	projectID := fs.String("project-id", "", "project id, e.g. prj_3f9a… (default: the workspace's default project)")
 	var subs stringList
 	fs.Var(&subs, "subscribe", "subscription as kind:pattern (repeatable)")
 	maxAttempts := fs.Int("max-attempts", 0, "maximum delivery attempts")
@@ -328,9 +384,9 @@ func endpointsCreate(ctx context.Context, args []string, gURL, gKey string) erro
 		os.Exit(2)
 	}
 
-	opts := &webhookd.CreateEndpointOptions{}
-	if *env != "" {
-		opts.Environment = *env
+	opts := &webhooks.CreateEndpointOptions{}
+	if *projectID != "" {
+		opts.ProjectID = *projectID
 	}
 	for _, s := range subs {
 		opts.Subscriptions = append(opts.Subscriptions, parseSubscription(s))
@@ -344,7 +400,7 @@ func endpointsCreate(ctx context.Context, args []string, gURL, gKey string) erro
 		opts.Description = &d
 	}
 
-	client, err := newClient(gURL, gKey)
+	client, err := newClient(gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -355,11 +411,11 @@ func endpointsCreate(ctx context.Context, args []string, gURL, gKey string) erro
 	return printJSON(ep)
 }
 
-func endpointsUpdate(ctx context.Context, args []string, gURL, gKey string) error {
+func endpointsUpdate(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	fs := newFlagSet("webhookd endpoints update", "Usage: webhookd endpoints update <id> --set key=value [--set key=value]...\n\nEach value is JSON-coerced (falling back to a string); use null to clear a field.")
 	var sets stringList
 	fs.Var(&sets, "set", "field update as key=value (repeatable, JSON-coerced)")
-	id, client, err := requireIDAndClient(fs, args, gURL, gKey)
+	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -367,7 +423,7 @@ func endpointsUpdate(ctx context.Context, args []string, gURL, gKey string) erro
 		return errors.New("endpoints update: at least one --set key=value is required")
 	}
 
-	patch := webhookd.Patch{}
+	patch := webhooks.Patch{}
 	for _, kv := range sets {
 		eq := strings.Index(kv, "=")
 		if eq < 0 {
@@ -388,9 +444,9 @@ func endpointsUpdate(ctx context.Context, args []string, gURL, gKey string) erro
 	return printJSON(ep)
 }
 
-func endpointsDelete(ctx context.Context, args []string, gURL, gKey string) error {
+func endpointsDelete(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	fs := newFlagSet("webhookd endpoints delete", "Usage: webhookd endpoints delete <id>")
-	id, client, err := requireIDAndClient(fs, args, gURL, gKey)
+	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -400,9 +456,9 @@ func endpointsDelete(ctx context.Context, args []string, gURL, gKey string) erro
 	return printJSON(map[string]string{"id": id, "status": "deleted"})
 }
 
-func endpointsRotateSecret(ctx context.Context, args []string, gURL, gKey string) error {
+func endpointsRotateSecret(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	fs := newFlagSet("webhookd endpoints rotate-secret", "Usage: webhookd endpoints rotate-secret <id>")
-	id, client, err := requireIDAndClient(fs, args, gURL, gKey)
+	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -413,9 +469,9 @@ func endpointsRotateSecret(ctx context.Context, args []string, gURL, gKey string
 	return printJSON(ep)
 }
 
-func endpointsEnable(ctx context.Context, args []string, gURL, gKey string) error {
+func endpointsEnable(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	fs := newFlagSet("webhookd endpoints enable", "Usage: webhookd endpoints enable <id>")
-	id, client, err := requireIDAndClient(fs, args, gURL, gKey)
+	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -430,7 +486,7 @@ func endpointsEnable(ctx context.Context, args []string, gURL, gKey string) erro
 // keys
 // ---------------------------------------------------------------------------
 
-func cmdKeys(ctx context.Context, args []string, gURL, gKey string) error {
+func cmdKeys(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	if len(args) == 0 {
 		printKeysUsage(os.Stderr)
 		os.Exit(2)
@@ -441,9 +497,9 @@ func cmdKeys(ctx context.Context, args []string, gURL, gKey string) error {
 		printKeysUsage(os.Stdout)
 		return nil
 	case "create":
-		return keysCreate(ctx, rest, gURL, gKey)
+		return keysCreate(ctx, rest, gURL, gKey, gProfile)
 	case "revoke":
-		return keysRevoke(ctx, rest, gURL, gKey)
+		return keysRevoke(ctx, rest, gURL, gKey, gProfile)
 	default:
 		fmt.Fprintf(os.Stderr, "webhookd keys: unknown subcommand %q\n\n", sub)
 		printKeysUsage(os.Stderr)
@@ -452,14 +508,14 @@ func cmdKeys(ctx context.Context, args []string, gURL, gKey string) error {
 	return nil
 }
 
-func keysCreate(ctx context.Context, args []string, gURL, gKey string) error {
+func keysCreate(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	fs := newFlagSet("webhookd keys create", "Usage: webhookd keys create [--name N] [--scope admin|publish] [--expires-in-days N]")
 	name := fs.String("name", "", "key name")
 	scope := fs.String("scope", "", "scope: admin|publish (default admin)")
 	expires := fs.Int("expires-in-days", 0, "expiry in days")
 	mustParse(fs, args)
 
-	opts := &webhookd.CreateAPIKeyOptions{}
+	opts := &webhooks.CreateAPIKeyOptions{}
 	if *name != "" {
 		opts.Name = *name
 	}
@@ -471,7 +527,7 @@ func keysCreate(ctx context.Context, args []string, gURL, gKey string) error {
 		opts.ExpiresInDays = &e
 	}
 
-	client, err := newClient(gURL, gKey)
+	client, err := newClient(gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -482,9 +538,9 @@ func keysCreate(ctx context.Context, args []string, gURL, gKey string) error {
 	return printJSON(key)
 }
 
-func keysRevoke(ctx context.Context, args []string, gURL, gKey string) error {
+func keysRevoke(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	fs := newFlagSet("webhookd keys revoke", "Usage: webhookd keys revoke <id>")
-	id, client, err := requireIDAndClient(fs, args, gURL, gKey)
+	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -498,7 +554,7 @@ func keysRevoke(ctx context.Context, args []string, gURL, gKey string) error {
 // deliveries
 // ---------------------------------------------------------------------------
 
-func cmdDeliveries(ctx context.Context, args []string, gURL, gKey string) error {
+func cmdDeliveries(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	if len(args) == 0 {
 		printDeliveriesUsage(os.Stderr)
 		os.Exit(2)
@@ -509,9 +565,9 @@ func cmdDeliveries(ctx context.Context, args []string, gURL, gKey string) error 
 		printDeliveriesUsage(os.Stdout)
 		return nil
 	case "list":
-		return deliveriesList(ctx, rest, gURL, gKey)
+		return deliveriesList(ctx, rest, gURL, gKey, gProfile)
 	case "redeliver":
-		return deliveriesRedeliver(ctx, rest, gURL, gKey)
+		return deliveriesRedeliver(ctx, rest, gURL, gKey, gProfile)
 	default:
 		fmt.Fprintf(os.Stderr, "webhookd deliveries: unknown subcommand %q\n\n", sub)
 		printDeliveriesUsage(os.Stderr)
@@ -520,7 +576,7 @@ func cmdDeliveries(ctx context.Context, args []string, gURL, gKey string) error 
 	return nil
 }
 
-func deliveriesList(ctx context.Context, args []string, gURL, gKey string) error {
+func deliveriesList(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	fs := newFlagSet("webhookd deliveries list", "Usage: webhookd deliveries list [--status S] [--endpoint ID] [--event-type T] [--since TS] [--until TS] [--q Q] [--limit N] [--offset N]")
 	status := fs.String("status", "", "delivery status filter")
 	endpoint := fs.String("endpoint", "", "endpoint id filter")
@@ -532,7 +588,7 @@ func deliveriesList(ctx context.Context, args []string, gURL, gKey string) error
 	offset := fs.Int("offset", 0, "pagination offset")
 	mustParse(fs, args)
 
-	opts := &webhookd.ListDeliveriesOptions{
+	opts := &webhooks.ListDeliveriesOptions{
 		Status:     *status,
 		EndpointID: *endpoint,
 		EventType:  *eventType,
@@ -549,7 +605,7 @@ func deliveriesList(ctx context.Context, args []string, gURL, gKey string) error
 		opts.Offset = &o
 	}
 
-	client, err := newClient(gURL, gKey)
+	client, err := newClient(gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -560,9 +616,9 @@ func deliveriesList(ctx context.Context, args []string, gURL, gKey string) error
 	return printJSON(page)
 }
 
-func deliveriesRedeliver(ctx context.Context, args []string, gURL, gKey string) error {
+func deliveriesRedeliver(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
 	fs := newFlagSet("webhookd deliveries redeliver", "Usage: webhookd deliveries redeliver <id>")
-	id, client, err := requireIDAndClient(fs, args, gURL, gKey)
+	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
 	}
@@ -612,7 +668,7 @@ func mustParse(fs *flag.FlagSet, args []string) {
 
 // requireIDAndClient extracts a leading positional <id>, parses any remaining flags (honouring
 // --help), and builds a configured client. Used by every "<verb> <id>" subcommand.
-func requireIDAndClient(fs *flag.FlagSet, args []string, gURL, gKey string) (string, *webhookd.Client, error) {
+func requireIDAndClient(fs *flag.FlagSet, args []string, gURL, gKey, gProfile string) (string, *webhooks.Client, error) {
 	var id string
 	flagArgs := args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -625,7 +681,7 @@ func requireIDAndClient(fs *flag.FlagSet, args []string, gURL, gKey string) (str
 		fs.Usage()
 		os.Exit(2)
 	}
-	client, err := newClient(gURL, gKey)
+	client, err := newClient(gURL, gKey, gProfile)
 	if err != nil {
 		return "", nil, err
 	}
@@ -646,11 +702,11 @@ func flagProvided(fs *flag.FlagSet, name string) bool {
 
 // parseSubscription turns a "kind:pattern" argument into a Subscription. A value with no colon is
 // treated as a bare match kind (e.g. "all") with an empty pattern.
-func parseSubscription(s string) webhookd.Subscription {
+func parseSubscription(s string) webhooks.Subscription {
 	if idx := strings.Index(s, ":"); idx >= 0 {
-		return webhookd.Subscription{MatchKind: s[:idx], Pattern: s[idx+1:]}
+		return webhooks.Subscription{MatchKind: s[:idx], Pattern: s[idx+1:]}
 	}
-	return webhookd.Subscription{MatchKind: s}
+	return webhooks.Subscription{MatchKind: s}
 }
 
 // coerceJSON parses raw as a JSON value, falling back to the raw string when it is not valid JSON.
@@ -665,90 +721,15 @@ func coerceJSON(raw string) any {
 }
 
 // newClient resolves the base URL + API key and returns a configured SDK client.
-func newClient(gURL, gKey string) (*webhookd.Client, error) {
-	baseURL, apiKey, err := resolveConfig(gURL, gKey)
+func newClient(gURL, gKey, gProfile string) (*webhooks.Client, error) {
+	cred, err := resolveCredentials(gURL, gKey, gProfile)
 	if err != nil {
 		return nil, err
 	}
-	return webhookd.New(baseURL, apiKey), nil
+	return webhooks.New(cred.URL, cred.APIKey), nil
 }
 
 // resolveConfig applies the flag -> env -> config-file precedence for the base URL and API key.
-func resolveConfig(gURL, gKey string) (string, string, error) {
-	baseURL := firstNonEmpty(gURL, os.Getenv("WEBHOOKD_URL"))
-	apiKey := firstNonEmpty(gKey, os.Getenv("WEBHOOKD_API_KEY"))
-
-	if baseURL == "" || apiKey == "" {
-		cfg, err := loadConfigFile()
-		if err != nil {
-			return "", "", err
-		}
-		baseURL = firstNonEmpty(baseURL, cfg.URL)
-		apiKey = firstNonEmpty(apiKey, cfg.APIKey)
-	}
-
-	if baseURL == "" {
-		return "", "", errors.New("no base URL configured; pass --url, set WEBHOOKD_URL, or run 'webhookd configure'")
-	}
-	if apiKey == "" {
-		return "", "", errors.New("no API key configured; pass --api-key, set WEBHOOKD_API_KEY, or run 'webhookd configure'")
-	}
-	return baseURL, apiKey, nil
-}
-
-// fileConfig is the on-disk shape of ~/.webhookd/config.json.
-type fileConfig struct {
-	URL    string `json:"url"`
-	APIKey string `json:"api_key"`
-}
-
-func configPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".webhookd", "config.json"), nil
-}
-
-// loadConfigFile reads the config file, returning an empty config when it does not exist.
-func loadConfigFile() (fileConfig, error) {
-	var cfg fileConfig
-	path, err := configPath()
-	if err != nil {
-		return cfg, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
-		}
-		return cfg, err
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("failed to parse %s: %w", path, err)
-	}
-	return cfg, nil
-}
-
-// saveConfigFile writes cfg to ~/.webhookd/config.json with mode 0600 and returns the path.
-func saveConfigFile(cfg fileConfig) (string, error) {
-	path, err := configPath()
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return "", err
-	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
 // promptLine writes label to stderr and reads one trimmed line from r.
 func promptLine(r *bufio.Reader, label string) (string, error) {
 	fmt.Fprint(os.Stderr, label)
@@ -791,11 +772,11 @@ Usage:
   webhookd [--url URL] [--api-key KEY] <command> [arguments]
 
 Global flags:
-  --url URL         webhookd base URL (env WEBHOOKD_URL, or config file)
-  --api-key KEY     API key           (env WEBHOOKD_API_KEY, or config file)
+  --url URL         webhookd base URL (env NN_WEBHOOKS_URL, or config file)
+  --api-key KEY     API key           (env NN_WEBHOOKS_API_KEY, or config file)
 
 Commands:
-  configure     Save base URL + API key to ~/.webhookd/config.json
+  configure     Save base URL + API key to $XDG_CONFIG_HOME/nn-webhooks/credentials.json
   publish       Publish an event
   endpoints     Manage endpoints (list, get, create, update, delete, rotate-secret, enable)
   keys          Manage API keys (create, revoke)
@@ -805,8 +786,8 @@ Commands:
 
 Run "webhookd <command> --help" for command-specific help.
 
-Configuration is resolved in order: flags, then the WEBHOOKD_URL / WEBHOOKD_API_KEY
-environment variables, then ~/.webhookd/config.json.
+Configuration is resolved in order: flags, then the NN_WEBHOOKS_URL / NN_WEBHOOKS_API_KEY
+environment variables, then $XDG_CONFIG_HOME/nn-webhooks/credentials.json.
 `)
 }
 

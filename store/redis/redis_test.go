@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
-	redisstore "github.com/NimbusNexus/webhookd-go/store/redis"
-	"github.com/NimbusNexus/webhookd-go/store/storetest"
+	webhooks "github.com/NimbusNexus/webhooks-go"
+	redisstore "github.com/NimbusNexus/webhooks-go/store/redis"
+	"github.com/NimbusNexus/webhooks-go/store/storetest"
 )
 
 // The Redis contract is the SAME as every other store's; it runs only when WEBHOOKD_TEST_REDIS_URL
@@ -21,7 +21,7 @@ func TestRedisStoreContract(t *testing.T) {
 		t.Skip("set WEBHOOKD_TEST_REDIS_URL to run the Redis store contract")
 	}
 	var n int
-	storetest.RunContract(t, func(t *testing.T) webhookd.Store {
+	storetest.RunContract(t, func(t *testing.T) webhooks.Store {
 		n++
 		prefix := fmt.Sprintf("webhookd:test:%d:%d", time.Now().UnixNano(), n)
 		s, err := redisstore.Open(redisstore.Options{URL: url, KeyPrefix: prefix})

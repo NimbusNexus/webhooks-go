@@ -1,4 +1,4 @@
-package webhookd
+package webhooks
 
 import (
 	"context"
@@ -36,13 +36,13 @@ func WithOnDead(fn func(Record)) Option {
 	return func(c *Client) { c.onDead = fn }
 }
 
-// EnqueueOptions carries the optional arguments to Client.Enqueue. Environment defaults to "prod"
-// and Application to "default" when empty. Source is stored only when non-nil. IdempotencyKey, when
+// EnqueueOptions carries the optional arguments to Client.Enqueue. ProjectID is the opaque project
+// id (prj_…); leave it EMPTY to target the workspace's default project — the record then stores no
+// project and Drain omits the field. Source is stored only when non-nil. IdempotencyKey, when
 // non-empty, becomes the record id (and the Idempotency-Key on every later Drain send); otherwise a
 // fresh UUID v4 is generated.
 type EnqueueOptions struct {
-	Environment    string
-	Application    string
+	ProjectID      string
 	Source         *string
 	IdempotencyKey string
 }
@@ -73,16 +73,11 @@ func (c *Client) Enqueue(ctx context.Context, eventType string, payload map[stri
 	if c.store == nil {
 		return "", &Error{Message: "enqueue requires a store — construct New(..., WithStore(...))"}
 	}
-	env, app := "prod", "default"
+	var projectID string
 	var source *string
 	id := ""
 	if opts != nil {
-		if opts.Environment != "" {
-			env = opts.Environment
-		}
-		if opts.Application != "" {
-			app = opts.Application
-		}
+		projectID = opts.ProjectID
 		source = opts.Source
 		id = opts.IdempotencyKey
 	}
@@ -94,8 +89,7 @@ func (c *Client) Enqueue(ctx context.Context, eventType string, payload map[stri
 		ID:            id,
 		EventType:     eventType,
 		Payload:       payload,
-		Environment:   env,
-		Application:   app,
+		ProjectID:     projectID,
 		Source:        source,
 		CreatedAt:     now,
 		Attempts:      0,
@@ -135,10 +129,11 @@ func (c *Client) Drain(ctx context.Context, opts *DrainOptions) (DrainResult, er
 	sent, failed := 0, 0
 	for _, record := range rows {
 		body := map[string]any{
-			"event_type":  record.EventType,
-			"payload":     record.Payload,
-			"environment": record.Environment,
-			"application": record.Application,
+			"event_type": record.EventType,
+			"payload":    record.Payload,
+		}
+		if record.ProjectID != "" {
+			body["project_id"] = record.ProjectID
 		}
 		if record.Source != nil {
 			body["source"] = *record.Source

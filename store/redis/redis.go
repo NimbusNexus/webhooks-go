@@ -1,4 +1,4 @@
-// Package redis provides a durable webhookd.Store backed by Redis via github.com/redis/go-redis/v9.
+// Package redis provides a durable webhooks.Store backed by Redis via github.com/redis/go-redis/v9.
 // Ordering by due-time lives in a sorted set scored on next_attempt_at (epoch ms); the record bodies
 // live in a hash. Both keys hang off a caller-set prefix so concurrent users don't collide.
 // Importing this package is what pulls the driver in — the core SDK never compiles it.
@@ -11,11 +11,11 @@ import (
 	"sort"
 	"time"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhooks-go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// Store is a Redis-backed webhookd.Store. Sent records are removed from both keys; a record whose
+// Store is a Redis-backed webhooks.Store. Sent records are removed from both keys; a record whose
 // retry budget is exhausted is parked with a far-future score, so it is never returned as due.
 type Store struct {
 	client    *goredis.Client
@@ -52,7 +52,7 @@ func Open(opts Options) (*Store, error) {
 func (s *Store) zsetKey() string { return s.keyPrefix + ":due" }
 func (s *Store) hashKey() string { return s.keyPrefix + ":records" }
 
-func (s *Store) Save(ctx context.Context, r webhookd.Record) error {
+func (s *Store) Save(ctx context.Context, r webhooks.Record) error {
 	body, err := json.Marshal(r)
 	if err != nil {
 		return fmt.Errorf("redis: encode record: %w", err)
@@ -66,7 +66,7 @@ func (s *Store) Save(ctx context.Context, r webhookd.Record) error {
 	return nil
 }
 
-func (s *Store) ListPending(ctx context.Context, limit int) ([]webhookd.Record, error) {
+func (s *Store) ListPending(ctx context.Context, limit int) ([]webhooks.Record, error) {
 	now := fmt.Sprintf("%d", time.Now().UnixMilli())
 	ids, err := s.client.ZRangeByScore(ctx, s.zsetKey(), &goredis.ZRangeBy{Min: "-inf", Max: now}).Result()
 	if err != nil {
@@ -79,13 +79,13 @@ func (s *Store) ListPending(ctx context.Context, limit int) ([]webhookd.Record, 
 	if err != nil {
 		return nil, fmt.Errorf("redis: load records: %w", err)
 	}
-	out := make([]webhookd.Record, 0, len(bodies))
+	out := make([]webhooks.Record, 0, len(bodies))
 	for _, b := range bodies {
 		raw, ok := b.(string)
 		if !ok {
 			continue // id fell out of the hash between the two calls
 		}
-		var r webhookd.Record
+		var r webhooks.Record
 		if err := json.Unmarshal([]byte(raw), &r); err != nil {
 			return nil, fmt.Errorf("redis: decode record: %w", err)
 		}
@@ -121,7 +121,7 @@ func (s *Store) MarkFailed(ctx context.Context, id string, lastError *string, at
 	if err != nil {
 		return fmt.Errorf("redis: mark_failed load: %w", err)
 	}
-	var r webhookd.Record
+	var r webhooks.Record
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		return fmt.Errorf("redis: decode record: %w", err)
 	}

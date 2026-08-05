@@ -16,7 +16,7 @@ import (
 	"os"
 	"strconv"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
+	webhooks "github.com/NimbusNexus/webhooks-go"
 )
 
 func main() {
@@ -39,17 +39,17 @@ func main() {
 
 		// X-Webhook-Timestamp arrives as a string; parse it so Verify can enforce the replay window.
 		// A missing or malformed timestamp is rejected rather than silently verified body-only.
-		var opts *webhookd.VerifyOptions
+		var opts *webhooks.VerifyOptions
 		if raw := r.Header.Get("X-Webhook-Timestamp"); raw != "" {
 			ts, perr := strconv.ParseInt(raw, 10, 64)
 			if perr != nil {
 				reject(w) // malformed timestamp — never authenticate it
 				return
 			}
-			opts = &webhookd.VerifyOptions{Timestamp: &ts}
+			opts = &webhooks.VerifyOptions{Timestamp: &ts}
 		}
 
-		if !webhookd.Verify(secret, body, r.Header.Get("X-Webhook-Signature"), opts) {
+		if !webhooks.Verify(secret, body, r.Header.Get("X-Webhook-Signature"), opts) {
 			reject(w) // forged, tampered, or replayed
 			return
 		}

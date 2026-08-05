@@ -1,12 +1,13 @@
-package webhookd
+package webhooks
 
-// Event is the published event, as returned by POST /v1/events (webhookd's EventOut).
+// Event is the published event, as returned by POST /v1/events (webhookd's EventOut). ProjectID is
+// the opaque project id (prj_…) the event landed in — the workspace's default project when the request
+// omitted one.
 type Event struct {
 	Id                string  `json:"id"`
 	EventUID          string  `json:"event_uid"`
 	EventType         string  `json:"event_type"`
-	Application       string  `json:"application"`
-	Environment       string  `json:"environment"`
+	ProjectID         string  `json:"project_id"`
 	DeliveriesCreated int     `json:"deliveries_created"`
 	Source            *string `json:"source"`
 }
@@ -24,8 +25,7 @@ type Subscription struct {
 type Endpoint struct {
 	Id                string            `json:"id"`
 	URL               string            `json:"url"`
-	Environment       string            `json:"environment"`
-	Application       string            `json:"application"`
+	ProjectID         string            `json:"project_id"`
 	Status            string            `json:"status"`
 	Subscriptions     []Subscription    `json:"subscriptions"`
 	Secret            *string           `json:"secret,omitempty"`
@@ -75,22 +75,21 @@ type Page[T any] struct {
 // is sent verbatim.
 type Patch = map[string]any
 
-// PublishOptions carries the optional arguments to Client.Publish. Environment defaults to "prod"
-// and Application to "default" when empty. Source is sent only when non-nil. IdempotencyKey, when
+// PublishOptions carries the optional arguments to Client.Publish. ProjectID is the opaque project
+// id (prj_…); leave it EMPTY to target the workspace's default project — the field is then omitted from
+// the request and the server resolves it. Source is sent only when non-nil. IdempotencyKey, when
 // non-empty, is sent as the Idempotency-Key header.
 type PublishOptions struct {
-	Environment    string
-	Application    string
+	ProjectID      string
 	Source         *string
 	IdempotencyKey string
 }
 
-// CreateEndpointOptions carries the optional arguments to Client.CreateEndpoint. Environment
-// defaults to "prod" and Application to "default" when empty. Every other field is sent only when
-// non-nil so the server applies its own default.
+// CreateEndpointOptions carries the optional arguments to Client.CreateEndpoint. ProjectID is the
+// opaque project id (prj_…); leave it EMPTY to target the workspace's default project. Every field is
+// sent only when set (non-empty string, non-nil pointer) so the server applies its own default.
 type CreateEndpointOptions struct {
-	Environment       string
-	Application       string
+	ProjectID         string
 	Subscriptions     []Subscription
 	Secret            *string
 	MaxAttempts       *int
@@ -100,12 +99,13 @@ type CreateEndpointOptions struct {
 	DeliveryTimeoutMs *int
 }
 
-// ListEndpointsOptions carries the optional arguments to Client.ListEndpoints. Environment defaults
-// to "prod" when empty; Offset is always sent; Limit is sent only when non-nil.
+// ListEndpointsOptions carries the optional arguments to Client.ListEndpoints. ProjectID is the
+// opaque project id (prj_…) and is sent only when non-empty — leave it empty to list the workspace's
+// default project. Offset is always sent; Limit is sent only when non-nil.
 type ListEndpointsOptions struct {
-	Environment string
-	Offset      int
-	Limit       *int
+	ProjectID string
+	Offset    int
+	Limit     *int
 }
 
 // CreateAPIKeyOptions carries the optional arguments to Client.CreateAPIKey. Scope defaults to

@@ -1,4 +1,4 @@
-package webhookd
+package webhooks
 
 import (
 	"encoding/json"

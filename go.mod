@@ -1,4 +1,4 @@
-module github.com/NimbusNexus/webhookd-go
+module github.com/NimbusNexus/webhooks-go
 
 go 1.25.0
 

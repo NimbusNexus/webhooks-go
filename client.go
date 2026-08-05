@@ -1,4 +1,4 @@
-package webhookd
+package webhooks
 
 import (
 	"bytes"
@@ -15,13 +15,13 @@ import (
 )
 
 // Version tracks the release tag; keep in lockstep with the Python/TypeScript SDKs.
-const Version = "0.3.0"
+const Version = "0.5.1"
 
 var retryStatuses = map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true}
 
 // Client publishes events to webhookd and manages endpoints, API keys and deliveries.
 //
-// Authenticate with a per-tenant API key (whsk_…) or a service token. Transient failures
+// Authenticate with a per-workspace API key (whsk_…) or a service token. Transient failures
 // (connection errors, 429, 5xx) are retried with capped exponential backoff; a 429 honours its
 // Retry-After header. Other non-2xx responses return an *APIError carrying the server's
 // {error: {code, message}} envelope.
@@ -83,26 +83,23 @@ func New(baseURL, apiKey string, opts ...Option) *Client {
 }
 
 // Publish publishes one event (POST /v1/events). idempotency makes the publish safe to retry — a
-// replay returns the original event without re-fanning-out.
+// replay returns the original event without re-fanning-out. With no opts.ProjectID the project_id
+// field is omitted and webhookd routes the event to the workspace's default project.
 func (c *Client) Publish(ctx context.Context, eventType string, payload map[string]any, opts *PublishOptions) (*Event, error) {
-	env, app := "prod", "default"
+	var projectID string
 	var source *string
 	var idempotency string
 	if opts != nil {
-		if opts.Environment != "" {
-			env = opts.Environment
-		}
-		if opts.Application != "" {
-			app = opts.Application
-		}
+		projectID = opts.ProjectID
 		source = opts.Source
 		idempotency = opts.IdempotencyKey
 	}
 	body := map[string]any{
-		"event_type":  eventType,
-		"payload":     payload,
-		"environment": env,
-		"application": app,
+		"event_type": eventType,
+		"payload":    payload,
+	}
+	if projectID != "" {
+		body["project_id"] = projectID
 	}
 	if source != nil {
 		body["source"] = *source
@@ -119,23 +116,16 @@ func (c *Client) Publish(ctx context.Context, eventType string, payload map[stri
 }
 
 // CreateEndpoint creates an endpoint (POST /v1/endpoints). The response includes the signing secret
-// exactly once — persist it.
+// exactly once — persist it. With no opts.ProjectID the project_id field is omitted and the endpoint
+// is created in the workspace's default project.
 func (c *Client) CreateEndpoint(ctx context.Context, endpointURL string, opts *CreateEndpointOptions) (*Endpoint, error) {
-	env, app := "prod", "default"
-	if opts != nil {
-		if opts.Environment != "" {
-			env = opts.Environment
-		}
-		if opts.Application != "" {
-			app = opts.Application
-		}
-	}
 	body := map[string]any{
-		"url":         endpointURL,
-		"environment": env,
-		"application": app,
+		"url": endpointURL,
 	}
 	if opts != nil {
+		if opts.ProjectID != "" {
+			body["project_id"] = opts.ProjectID
+		}
 		if opts.Subscriptions != nil {
 			body["subscriptions"] = opts.Subscriptions
 		}
@@ -165,19 +155,20 @@ func (c *Client) CreateEndpoint(ctx context.Context, endpointURL string, opts *C
 	return decodeJSON[Endpoint](resp)
 }
 
-// ListEndpoints lists endpoints for an environment (default "prod") (GET /v1/endpoints).
+// ListEndpoints lists endpoints for one project (GET /v1/endpoints). With no opts.ProjectID the
+// project_id query param is omitted and webhookd lists the workspace's default project.
 func (c *Client) ListEndpoints(ctx context.Context, opts *ListEndpointsOptions) (*Page[Endpoint], error) {
-	env, offset := "prod", 0
+	projectID, offset := "", 0
 	var limit *int
 	if opts != nil {
-		if opts.Environment != "" {
-			env = opts.Environment
-		}
+		projectID = opts.ProjectID
 		offset = opts.Offset
 		limit = opts.Limit
 	}
 	query := url.Values{}
-	query.Set("environment", env)
+	if projectID != "" {
+		query.Set("project_id", projectID)
+	}
 	query.Set("offset", strconv.Itoa(offset))
 	if limit != nil {
 		query.Set("limit", strconv.Itoa(*limit))

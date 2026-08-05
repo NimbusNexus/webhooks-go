@@ -1,7 +1,8 @@
-package webhookd_test
+package webhooks_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -9,23 +10,23 @@ import (
 	"testing"
 	"time"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
-	"github.com/NimbusNexus/webhookd-go/store/storetest"
+	webhooks "github.com/NimbusNexus/webhooks-go"
+	"github.com/NimbusNexus/webhooks-go/store/storetest"
 )
 
 // -- shared store contract, run fully for the stdlib-only stores ---------------
 
 func TestMemoryStoreContract(t *testing.T) {
-	storetest.RunContract(t, func(t *testing.T) webhookd.Store {
-		s := webhookd.NewMemoryStore()
+	storetest.RunContract(t, func(t *testing.T) webhooks.Store {
+		s := webhooks.NewMemoryStore()
 		t.Cleanup(func() { _ = s.Close() })
 		return s
 	})
 }
 
 func TestFileStoreContract(t *testing.T) {
-	storetest.RunContract(t, func(t *testing.T) webhookd.Store {
-		s, err := webhookd.NewFileStore(t.TempDir())
+	storetest.RunContract(t, func(t *testing.T) webhooks.Store {
+		s, err := webhooks.NewFileStore(t.TempDir())
 		if err != nil {
 			t.Fatalf("NewFileStore: %v", err)
 		}
@@ -37,17 +38,17 @@ func TestFileStoreContract(t *testing.T) {
 func TestFileStoreSurvivesReopen(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	s1, err := webhookd.NewFileStore(dir)
+	s1, err := webhooks.NewFileStore(dir)
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
 	}
 	now := time.Now()
-	if err := s1.Save(ctx, webhookd.Record{ID: "keep", EventType: "e", Payload: map[string]any{"k": 1}, Environment: "prod", Application: "default", CreatedAt: now, NextAttemptAt: now}); err != nil {
+	if err := s1.Save(ctx, webhooks.Record{ID: "keep", EventType: "e", Payload: map[string]any{"k": 1}, ProjectID: "prj_3f9a1c7b", CreatedAt: now, NextAttemptAt: now}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	_ = s1.Close()
 
-	s2, err := webhookd.NewFileStore(dir) // a fresh store over the same directory
+	s2, err := webhooks.NewFileStore(dir) // a fresh store over the same directory
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -67,15 +68,19 @@ type recorder struct {
 	mu     sync.Mutex
 	count  int
 	keys   []string
+	bodies []map[string]any
 	failFn func(n int) bool // returns true to fail (500) the nth (1-based) request
 }
 
 func (rc *recorder) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		rc.mu.Lock()
 		rc.count++
 		n := rc.count
 		rc.keys = append(rc.keys, r.Header.Get("Idempotency-Key"))
+		rc.bodies = append(rc.bodies, body)
 		fail := rc.failFn != nil && rc.failFn(n)
 		rc.mu.Unlock()
 		if fail {
@@ -84,7 +89,7 @@ func (rc *recorder) handler(t *testing.T) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"evt_1","event_uid":"u1","event_type":"order.created","application":"default","environment":"prod","deliveries_created":1,"source":null}`))
+		_, _ = w.Write([]byte(`{"id":"evt_1","event_uid":"u1","event_type":"order.created","project_id":"prj_3f9a1c7b","deliveries_created":1,"source":null}`))
 	}
 }
 
@@ -93,6 +98,12 @@ func (rc *recorder) snapshot() (int, []string) {
 	defer rc.mu.Unlock()
 	keys := append([]string(nil), rc.keys...)
 	return rc.count, keys
+}
+
+func (rc *recorder) sentBodies() []map[string]any {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return append([]map[string]any(nil), rc.bodies...)
 }
 
 func newServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
@@ -106,8 +117,8 @@ func TestEnqueueWritesNoNetworkAndDrainSendsEachWithIdempotencyKey(t *testing.T)
 	ctx := context.Background()
 	rc := &recorder{}
 	srv := newServer(t, rc.handler(t))
-	store := webhookd.NewMemoryStore()
-	c := webhookd.New(srv.URL, "whsk_x", webhookd.WithStore(store), webhookd.WithMaxRetries(0))
+	store := webhooks.NewMemoryStore()
+	c := webhooks.New(srv.URL, "whsk_x", webhooks.WithStore(store), webhooks.WithMaxRetries(0))
 
 	wantIDs := make([]string, 0, 3)
 	for i := 0; i < 3; i++ {
@@ -150,12 +161,62 @@ func TestEnqueueWritesNoNetworkAndDrainSendsEachWithIdempotencyKey(t *testing.T)
 	}
 }
 
+func TestDrainOmitsProjectIDUnlessEnqueuedWithOne(t *testing.T) {
+	ctx := context.Background()
+	rc := &recorder{}
+	srv := newServer(t, rc.handler(t))
+	store := webhooks.NewMemoryStore()
+	c := webhooks.New(srv.URL, "whsk_x", webhooks.WithStore(store), webhooks.WithMaxRetries(0))
+
+	// No ProjectID -> the record stores none and the publish body omits the field entirely, letting
+	// the server resolve the workspace default. An id is opaque, so no literal can stand in for it.
+	if _, err := c.Enqueue(ctx, "order.created", map[string]any{"n": 1}, nil); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if _, err := c.Drain(ctx, nil); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	bodies := rc.sentBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("requests = %d, want 1", len(bodies))
+	}
+	if _, ok := bodies[0]["project_id"]; ok {
+		t.Errorf("project_id must be omitted when unset, got %v", bodies[0]["project_id"])
+	}
+	if _, ok := bodies[0]["project"]; ok {
+		t.Errorf("legacy project slug field must never be sent, got %v", bodies[0]["project"])
+	}
+
+	// An explicit id is persisted on the record and forwarded verbatim on the drain.
+	if _, err := c.Enqueue(ctx, "order.created", map[string]any{"n": 2},
+		&webhooks.EnqueueOptions{ProjectID: "prj_payments"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	pending, err := store.ListPending(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ProjectID != "prj_payments" {
+		t.Fatalf("buffered record = %+v, want ProjectID prj_payments", pending)
+	}
+	if _, err := c.Drain(ctx, nil); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	bodies = rc.sentBodies()
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %d, want 2", len(bodies))
+	}
+	if bodies[1]["project_id"] != "prj_payments" {
+		t.Errorf("project_id = %v, want prj_payments", bodies[1]["project_id"])
+	}
+}
+
 func TestFailingTransportBumpsAttemptsAndLaterDrainRetriesSameID(t *testing.T) {
 	ctx := context.Background()
 	rc := &recorder{failFn: func(n int) bool { return n == 1 }} // only the first send fails
 	srv := newServer(t, rc.handler(t))
-	store := webhookd.NewMemoryStore()
-	c := webhookd.New(srv.URL, "whsk_x", webhookd.WithStore(store), webhookd.WithMaxRetries(0))
+	store := webhooks.NewMemoryStore()
+	c := webhooks.New(srv.URL, "whsk_x", webhooks.WithStore(store), webhooks.WithMaxRetries(0))
 
 	id, err := c.Enqueue(ctx, "order.created", map[string]any{"n": 1}, nil)
 	if err != nil {
@@ -205,15 +266,15 @@ func TestMaxAttemptsDeadLettersAndFiresOnDead(t *testing.T) {
 	ctx := context.Background()
 	rc := &recorder{failFn: func(int) bool { return true }} // every send fails
 	srv := newServer(t, rc.handler(t))
-	store := webhookd.NewMemoryStore()
+	store := webhooks.NewMemoryStore()
 
 	var mu sync.Mutex
-	var dead []webhookd.Record
-	c := webhookd.New(srv.URL, "whsk_x",
-		webhookd.WithStore(store),
-		webhookd.WithMaxRetries(0),
-		webhookd.WithMaxAttempts(2),
-		webhookd.WithOnDead(func(r webhookd.Record) {
+	var dead []webhooks.Record
+	c := webhooks.New(srv.URL, "whsk_x",
+		webhooks.WithStore(store),
+		webhooks.WithMaxRetries(0),
+		webhooks.WithMaxAttempts(2),
+		webhooks.WithOnDead(func(r webhooks.Record) {
 			mu.Lock()
 			dead = append(dead, r)
 			mu.Unlock()
@@ -246,7 +307,7 @@ func TestMaxAttemptsDeadLettersAndFiresOnDead(t *testing.T) {
 		t.Fatalf("remaining = %d, want 1 (dead record stays buffered)", res.Remaining)
 	}
 	mu.Lock()
-	got := append([]webhookd.Record(nil), dead...)
+	got := append([]webhooks.Record(nil), dead...)
 	mu.Unlock()
 	if len(got) != 1 {
 		t.Fatalf("onDead fired %d times, want 1", len(got))
@@ -276,8 +337,8 @@ func TestBackgroundDrainerShipsBufferedRecords(t *testing.T) {
 	ctx := context.Background()
 	rc := &recorder{}
 	srv := newServer(t, rc.handler(t))
-	store := webhookd.NewMemoryStore()
-	c := webhookd.New(srv.URL, "whsk_x", webhookd.WithStore(store), webhookd.WithMaxRetries(0))
+	store := webhooks.NewMemoryStore()
+	c := webhooks.New(srv.URL, "whsk_x", webhooks.WithStore(store), webhooks.WithMaxRetries(0))
 
 	if _, err := c.Enqueue(ctx, "order.created", map[string]any{"n": 1}, nil); err != nil {
 		t.Fatalf("Enqueue: %v", err)

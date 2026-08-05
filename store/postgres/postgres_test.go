@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	webhookd "github.com/NimbusNexus/webhookd-go"
-	"github.com/NimbusNexus/webhookd-go/store/postgres"
-	"github.com/NimbusNexus/webhookd-go/store/storetest"
+	webhooks "github.com/NimbusNexus/webhooks-go"
+	"github.com/NimbusNexus/webhooks-go/store/postgres"
+	"github.com/NimbusNexus/webhooks-go/store/storetest"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -23,7 +23,7 @@ func TestPostgresStoreContract(t *testing.T) {
 	}
 	ctx := context.Background()
 	var n int
-	storetest.RunContract(t, func(t *testing.T) webhookd.Store {
+	storetest.RunContract(t, func(t *testing.T) webhooks.Store {
 		n++
 		table := fmt.Sprintf("webhookd_outbox_test_%d_%d", time.Now().UnixNano(), n)
 		s, err := postgres.Open(ctx, postgres.Options{ConnString: dsn, Table: table})
@@ -63,7 +63,7 @@ func TestPostgresCustomTableUsedEverywhere(t *testing.T) {
 	}()
 
 	now := time.Now()
-	rec := webhookd.Record{ID: "c1", EventType: "e", Payload: map[string]any{"x": 1}, Environment: "prod", Application: "default", CreatedAt: now, NextAttemptAt: now}
+	rec := webhooks.Record{ID: "c1", EventType: "e", Payload: map[string]any{"x": 1}, ProjectID: "prj_3f9a1c7b", CreatedAt: now, NextAttemptAt: now}
 	if err := s.Save(ctx, rec); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

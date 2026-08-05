@@ -1,4 +1,4 @@
-package webhookd
+package webhooks
 
 import (
 	"context"
@@ -41,12 +41,14 @@ func writeJSON(t *testing.T, w http.ResponseWriter, status int, v any) {
 	}
 }
 
+// projectID is an opaque project id — webhookd addresses projects by id, never by slug.
+const projectID = "prj_3f9a1c7b"
+
 var okEvent = map[string]any{
 	"id":                 "evt_db",
 	"event_uid":          "u1",
 	"event_type":         "order.created",
-	"application":        "default",
-	"environment":        "prod",
+	"project_id":         projectID,
 	"deliveries_created": 2,
 	"source":             nil,
 }
@@ -54,8 +56,7 @@ var okEvent = map[string]any{
 var okEndpoint = map[string]any{
 	"id":            "ep_1",
 	"url":           "https://sub.example.com/hook",
-	"environment":   "prod",
-	"application":   "default",
+	"project_id":    projectID,
 	"status":        "enabled",
 	"secret":        "whsec_shown_once",
 	"subscriptions": []any{map[string]any{"match_kind": "prefix", "pattern": "order."}},
@@ -81,8 +82,13 @@ func TestPublishSuccessAndRequestShape(t *testing.T) {
 		if body["event_type"] != "order.created" {
 			t.Errorf("event_type = %v", body["event_type"])
 		}
-		if body["environment"] != "prod" || body["application"] != "default" {
-			t.Errorf("defaults not applied: %v", body)
+		// No project id given -> the field is OMITTED and the server resolves the workspace default.
+		// There is no client-side sentinel: sending a literal would be a bogus id and 404.
+		if _, ok := body["project_id"]; ok {
+			t.Errorf("project_id must be omitted when unset, got %v", body["project_id"])
+		}
+		if _, ok := body["project"]; ok {
+			t.Errorf("legacy project slug field must never be sent, got %v", body["project"])
 		}
 		payload, _ := body["payload"].(map[string]any)
 		if payload["id"] != float64(1) {
@@ -98,6 +104,9 @@ func TestPublishSuccessAndRequestShape(t *testing.T) {
 	if ev.EventUID != "u1" || ev.DeliveriesCreated != 2 {
 		t.Errorf("event = %+v", ev)
 	}
+	if ev.ProjectID != projectID {
+		t.Errorf("project_id = %q, want %q (resolved default project)", ev.ProjectID, projectID)
+	}
 	if ev.Source != nil {
 		t.Errorf("source = %v, want nil", *ev.Source)
 	}
@@ -112,14 +121,14 @@ func TestPublishSetsIdempotencyKeyAndSource(t *testing.T) {
 		if body["source"] != "billing" {
 			t.Errorf("source = %v, want billing", body["source"])
 		}
-		if body["environment"] != "staging" {
-			t.Errorf("environment = %v, want staging", body["environment"])
+		if body["project_id"] != "prj_payments" {
+			t.Errorf("project_id = %v, want prj_payments", body["project_id"])
 		}
 		writeJSON(t, w, http.StatusCreated, okEvent)
 	})
 
 	_, err := c.Publish(bg(), "order.created", map[string]any{"id": 1}, &PublishOptions{
-		Environment:    "staging",
+		ProjectID:      "prj_payments",
 		Source:         strPtr("billing"),
 		IdempotencyKey: "order-123",
 	})
@@ -261,9 +270,6 @@ func TestCreateEndpointRequestShapeAndSecret(t *testing.T) {
 		if body["url"] != "https://sub.example.com/hook" {
 			t.Errorf("url = %v", body["url"])
 		}
-		if body["environment"] != "prod" || body["application"] != "default" {
-			t.Errorf("defaults = %v", body)
-		}
 		if body["max_attempts"] != float64(5) {
 			t.Errorf("max_attempts = %v", body["max_attempts"])
 		}
@@ -271,7 +277,8 @@ func TestCreateEndpointRequestShapeAndSecret(t *testing.T) {
 		if len(subs) != 1 {
 			t.Errorf("subscriptions = %v", body["subscriptions"])
 		}
-		for _, k := range []string{"secret", "retry_schedule", "description", "custom_headers", "delivery_timeout_ms"} {
+		// project_id joins the omit-when-unset set: no id means the workspace's default project.
+		for _, k := range []string{"project_id", "project", "secret", "retry_schedule", "description", "custom_headers", "delivery_timeout_ms"} {
 			if _, ok := body[k]; ok {
 				t.Errorf("unset optional %q must be omitted", k)
 			}
@@ -288,6 +295,23 @@ func TestCreateEndpointRequestShapeAndSecret(t *testing.T) {
 	}
 	if ep.Id != "ep_1" || ep.Secret == nil || *ep.Secret != "whsec_shown_once" {
 		t.Errorf("endpoint = %+v", ep)
+	}
+	if ep.ProjectID != projectID {
+		t.Errorf("project_id = %q, want %q", ep.ProjectID, projectID)
+	}
+}
+
+func TestCreateEndpointSendsProjectIDWhenSet(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body := decodeBody(t, r)
+		if body["project_id"] != "prj_payments" {
+			t.Errorf("project_id = %v, want prj_payments", body["project_id"])
+		}
+		writeJSON(t, w, http.StatusCreated, okEndpoint)
+	})
+	_, err := c.CreateEndpoint(bg(), "https://sub.example.com/hook", &CreateEndpointOptions{ProjectID: "prj_payments"})
+	if err != nil {
+		t.Fatalf("CreateEndpoint: %v", err)
 	}
 }
 
@@ -310,13 +334,13 @@ func TestListEndpointsQueryAndPage(t *testing.T) {
 			t.Errorf("%s %s, want GET /v1/endpoints", r.Method, r.URL.Path)
 		}
 		q := r.URL.Query()
-		if q.Get("environment") != "staging" || q.Get("offset") != "0" || q.Get("limit") != "50" {
+		if q.Get("project_id") != "prj_payments" || q.Get("offset") != "0" || q.Get("limit") != "50" {
 			t.Errorf("query = %v", q.Encode())
 		}
 		writeJSON(t, w, http.StatusOK, map[string]any{"items": []any{okEndpoint}, "next_offset": 50})
 	})
 
-	page, err := c.ListEndpoints(bg(), &ListEndpointsOptions{Environment: "staging", Limit: intPtr(50)})
+	page, err := c.ListEndpoints(bg(), &ListEndpointsOptions{ProjectID: "prj_payments", Limit: intPtr(50)})
 	if err != nil {
 		t.Fatalf("ListEndpoints: %v", err)
 	}
@@ -328,14 +352,17 @@ func TestListEndpointsQueryAndPage(t *testing.T) {
 	}
 }
 
-func TestListEndpointsDefaultsEnvironmentAndOffset(t *testing.T) {
+func TestListEndpointsOmitsProjectIDAndDefaultsOffset(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if q.Get("environment") != "prod" || q.Get("offset") != "0" {
+		if q.Get("offset") != "0" {
 			t.Errorf("query = %v", q.Encode())
 		}
-		if _, ok := q["limit"]; ok {
-			t.Errorf("limit must be omitted when unset")
+		// No id given -> no project_id param at all; the server lists the workspace's default project.
+		for _, k := range []string{"project_id", "project", "limit"} {
+			if _, ok := q[k]; ok {
+				t.Errorf("%q must be omitted when unset, got %v", k, q[k])
+			}
 		}
 		writeJSON(t, w, http.StatusOK, map[string]any{"items": []any{}, "next_offset": nil})
 	})
