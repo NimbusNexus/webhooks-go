@@ -102,8 +102,9 @@ func main() {
 ```
 
 `New` accepts functional options: `WithTimeout(time.Duration)` (default 10s), `WithMaxRetries(int)`
-(default 2), and `WithHTTPClient(*http.Client)`. Transient failures (connection errors, `429`, `5xx`)
-are retried with capped exponential backoff (a `429` honours `Retry-After`); other non-2xx responses
+(default 2), and `WithHTTPClient(*http.Client)`. Transient failures (connection errors, `429`, and
+`500`/`502`/`503`/`504`) are retried with capped exponential backoff (a `429` honours
+`Retry-After`); other non-2xx responses
 return an `*APIError` carrying the stable `{error:{code,message}}` envelope. Every method takes a
 `context.Context` first.
 
@@ -181,15 +182,17 @@ with the *same* key and webhookd returns the original event without re-fanning-o
 keeps failing is retried with capped exponential backoff up to `WithMaxAttempts` (default 10), then
 flagged **dead** (never retried again, kept buffered) and handed to the optional `WithOnDead` hook.
 
-**Built-in stores** — pass one to `webhooks.WithStore(...)`:
+**Built-in stores** — construct one and pass it to `webhooks.WithStore(...)`. Only
+`NewMemoryStore` returns a bare value; every other constructor returns `(store, error)`, so assign
+and check it first as the example above does:
 
-| Store | Durable? | Extra needed |
+| Constructor | Durable? | Extra needed |
 | --- | --- | --- |
 | `webhooks.NewMemoryStore()` | No (in-process) | — (stdlib) |
 | `webhooks.NewFileStore(dir)` | Yes (per-record JSON, atomic write+rename) | — (stdlib) |
 | `sqlite.Open(path)` | Yes (transactional) | `store/sqlite` → `modernc.org/sqlite` (pure Go, no cgo) |
-| `redis.Open(redis.Options{URL})` | Yes (sorted-set + hash under a key prefix) | `store/redis` → `github.com/redis/go-redis/v9` |
-| `postgres.Open(ctx, postgres.Options{ConnString})` | Yes (`webhookd_outbox` table, name configurable) | `store/postgres` → `github.com/jackc/pgx/v5` |
+| `redis.Open(redis.Options{URL: url})` | Yes (sorted-set + hash under a key prefix) | `store/redis` → `github.com/redis/go-redis/v9` |
+| `postgres.Open(ctx, postgres.Options{ConnString: dsn})` | Yes (`webhookd_outbox` table, name configurable) | `store/postgres` → `github.com/jackc/pgx/v5` |
 
 A buffered `Record` carries an optional `ProjectID`; an empty one means the workspace's default project
 and is persisted as SQL `NULL` (the `project_id` column is nullable), so `Drain` omits `project_id`

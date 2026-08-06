@@ -777,7 +777,8 @@ Global flags:
   --profile NAME    Named credential profile (env NN_WEBHOOKS_PROFILE, default "default")
 
 Commands:
-  configure     Save base URL + API key to $XDG_CONFIG_HOME/nn-webhooks/credentials.json
+  configure     Save base URL + API key to the credentials file (see below)
+  whoami        Show the resolved URL + key, and which source supplied each
   publish       Publish an event
   endpoints     Manage endpoints (list, get, create, update, delete, rotate-secret, enable)
   keys          Manage API keys (create, revoke)
@@ -788,7 +789,9 @@ Commands:
 Run "nn-webhooks <command> --help" for command-specific help.
 
 Configuration is resolved in order: flags, then the NN_WEBHOOKS_URL / NN_WEBHOOKS_API_KEY
-environment variables, then $XDG_CONFIG_HOME/nn-webhooks/credentials.json.
+environment variables, then $XDG_CONFIG_HOME/nn-webhooks/credentials.json — falling back to
+~/.config/nn-webhooks/credentials.json when XDG_CONFIG_HOME is unset. Run whoami to see which
+source won.
 `)
 }
 

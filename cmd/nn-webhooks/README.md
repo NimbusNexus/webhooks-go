@@ -15,7 +15,7 @@ brew install nimbusnexus/tap/nn-webhooks
 go install github.com/NimbusNexus/webhooks-go/cmd/nn-webhooks@latest
 ```
 
-Any other platform: signed archives and a `checksums.txt` are attached to every
+Any other platform: archives and a `checksums.txt` are attached to every
 [release](https://github.com/NimbusNexus/webhooks-go/releases). The archive name carries the
 version, so there is no version-agnostic download URL — take the one matching your platform:
 
@@ -31,7 +31,9 @@ nn-webhooks configure                 # prompts for URL + API key
 nn-webhooks whoami                    # what would be used, and where it came from
 ```
 
-Credentials live in `$XDG_CONFIG_HOME/nn-webhooks/credentials.json` (mode `0600`), as **named
+Credentials live in `$XDG_CONFIG_HOME/nn-webhooks/credentials.json` — or
+`~/.config/nn-webhooks/credentials.json` when `XDG_CONFIG_HOME` is unset, which it is by default on
+macOS — mode `0600`, as **named
 profiles** — so a second deployment is a flag rather than overwriting the first:
 
 ```bash
@@ -43,7 +45,7 @@ For CI, skip the file entirely:
 
 ```bash
 export NN_WEBHOOKS_URL=https://api.webhooks.example.com
-export NN_WEBHOOKS_API_KEY=whk_...
+export NN_WEBHOOKS_API_KEY=whsk_...
 nn-webhooks deliveries list --status dead
 ```
 
@@ -82,14 +84,17 @@ Subscriptions are `kind:pattern` and the flag repeats — `prefix:deploy.`, `exa
 subscribe to everything: `--subscribe all`. Values given to `--set` are JSON-coerced, falling back to
 a string; use `null` to clear a field.
 
-Everything prints JSON, so it pipes into `jq` without a `--format` flag to remember.
+Every command that returns data prints JSON, so it pipes into `jq` without a `--format` flag to
+remember. The exception is `verify`, which prints `ok`/`failed` and exits 0/1 so it can be used
+directly in a shell condition.
 
 ## Versions
 
-`nn-webhooks version` reports two numbers, and they can legitimately differ:
+`nn-webhooks version` reports the following, and the first two can legitimately differ:
 
 - `version` — the release this binary came from (stamped at build time)
 - `sdk` — the client library compiled into it
+- `commit` — the short commit the release was built from; present on release builds only
 
 A binary built from source rather than a release has no tag to name, so it reports the SDK version
 with a `+source` suffix instead of pretending to be a release.

@@ -15,7 +15,7 @@ import (
 )
 
 // Version tracks the release tag; keep in lockstep with the Python/TypeScript SDKs.
-const Version = "0.5.1"
+const Version = "0.5.2"
 
 var retryStatuses = map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true}
 
