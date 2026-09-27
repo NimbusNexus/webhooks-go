@@ -509,7 +509,7 @@ func cmdKeys(ctx context.Context, args []string, gURL, gKey, gProfile string) er
 }
 
 func keysCreate(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("nn-webhooks keys create", "Usage: nn-webhooks keys create [--name N] [--scope admin|publish] [--expires-in-days N]")
+	fs := newFlagSet("nn-webhooks keys create", "Usage: nn-webhooks keys create [--name N] [--scope admin|publish|read] [--expires-in-days N]\n\nCalls POST /v1/api-keys, which webhookd has deleted: this fails with a 404. Mint keys in your\nNimbusNexus account console under \"API keys\", choosing Webhooks as the product.")
 	name := fs.String("name", "", "key name")
 	scope := fs.String("scope", "", "scope: admin|publish (default admin)")
 	expires := fs.Int("expires-in-days", 0, "expiry in days")
@@ -539,7 +539,7 @@ func keysCreate(ctx context.Context, args []string, gURL, gKey, gProfile string)
 }
 
 func keysRevoke(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
-	fs := newFlagSet("nn-webhooks keys revoke", "Usage: nn-webhooks keys revoke <id>")
+	fs := newFlagSet("nn-webhooks keys revoke", "Usage: nn-webhooks keys revoke <id>\n\nCalls DELETE /v1/api-keys/{id}, which webhookd has deleted: this fails with a 404. Revoke keys in\nyour NimbusNexus account console.")
 	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
 	if err != nil {
 		return err
@@ -781,7 +781,7 @@ Commands:
   whoami        Show the resolved URL + key, and which source supplied each
   publish       Publish an event
   endpoints     Manage endpoints (list, get, create, update, delete, rotate-secret, enable)
-  keys          Manage API keys (create, revoke)
+  keys          API-key commands — webhookd deleted these routes; they now fail (404)
   deliveries    Inspect deliveries (list, redeliver)
   verify        Verify a webhook signature (body read from stdin)
   version       Print the SDK/CLI version
@@ -814,9 +814,12 @@ Run "nn-webhooks endpoints <subcommand> --help" for details.
 func printKeysUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage: nn-webhooks keys <subcommand> [arguments]
 
+webhookd has deleted the /v1/api-keys routes, so both subcommands below fail with a 404. Mint and
+revoke keys in your NimbusNexus account console under "API keys", choosing Webhooks as the product.
+
 Subcommands:
-  create [--name N] [--scope admin|publish] [--expires-in-days N]   Create an API key
-  revoke <id>                                                       Revoke an API key
+  create [--name N] [--scope admin|publish|read] [--expires-in-days N]   Calls the deleted create route
+  revoke <id>                                                       Calls the deleted revoke route
 
 Run "nn-webhooks keys <subcommand> --help" for details.
 `)

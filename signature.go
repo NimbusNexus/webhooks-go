@@ -1,7 +1,7 @@
 // Package webhookd is the official Go SDK for NimbusNexus Webhooks (webhookd).
 //
 //   - Verify — verify an incoming webhook's HMAC signature (for subscribers).
-//   - Client — publish events to webhookd and manage endpoints/keys/deliveries (for producers).
+//   - Client — publish events to webhookd and manage endpoints/deliveries (for producers).
 //
 // webhookd signs every delivery as HMAC_SHA256(secret, "<timestamp>." + rawBody) (its default
 // timestamped mode) and sends X-Webhook-Signature: sha256=<hex> plus X-Webhook-Timestamp

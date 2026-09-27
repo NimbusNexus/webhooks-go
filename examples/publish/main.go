@@ -1,6 +1,9 @@
 // Command publish is a runnable example: publish one event with the SDK.
 //
-//	WEBHOOKD_URL=https://api.webhooks.example WEBHOOKD_API_KEY=whsk_... go run ./examples/publish
+//	WEBHOOKD_URL=https://api.webhooks.example WEBHOOKD_API_KEY=eyJ... go run ./examples/publish
+//
+// The API key is minted in the NimbusNexus account console under "API keys", with Webhooks as the
+// product; it is a JWT. An older whsk_... key is no longer accepted.
 //
 // This mirrors examples/python/publish.py and examples/typescript/publish.ts.
 package main

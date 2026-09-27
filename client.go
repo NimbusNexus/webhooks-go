@@ -15,15 +15,16 @@ import (
 )
 
 // Version tracks the release tag; keep in lockstep with the Python/TypeScript SDKs.
-const Version = "0.5.2"
+const Version = "0.6.0"
 
 var retryStatuses = map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true}
 
-// Client publishes events to webhookd and manages endpoints, API keys and deliveries.
+// Client publishes events to webhookd and manages endpoints and deliveries.
 //
-// Authenticate with a per-workspace API key (whsk_…) or a service token. Transient failures
-// (connection errors, 429, 5xx) are retried with capped exponential backoff; a 429 honours its
-// Retry-After header. Other non-2xx responses return an *APIError carrying the server's
+// Authenticate with an API key minted in the NimbusNexus account console (a JWT, so it starts with
+// eyJ…) or a service token. Keys of the older whsk_… family are no longer accepted. Transient
+// failures (connection errors, 429, 5xx) are retried with capped exponential backoff; a 429 honours
+// its Retry-After header. Other non-2xx responses return an *APIError carrying the server's
 // {error: {code, message}} envelope.
 type Client struct {
 	baseURL    string
@@ -229,8 +230,9 @@ func (c *Client) EnableEndpoint(ctx context.Context, id string) (*Endpoint, erro
 	return decodeJSON[Endpoint](resp)
 }
 
-// CreateAPIKey creates an API key (POST /v1/api-keys). The response includes the raw key exactly
-// once — persist it.
+// CreateAPIKey posts to /v1/api-keys. webhookd no longer serves that route, so the call fails with
+// a 404 at runtime — the method still compiles, but it cannot mint a key. Mint keys in your
+// NimbusNexus account console under "API keys", choosing Webhooks as the product.
 func (c *Client) CreateAPIKey(ctx context.Context, opts *CreateAPIKeyOptions) (*ApiKey, error) {
 	name, scope := "", "admin"
 	var expiresInDays *int
@@ -252,7 +254,9 @@ func (c *Client) CreateAPIKey(ctx context.Context, opts *CreateAPIKeyOptions) (*
 	return decodeJSON[ApiKey](resp)
 }
 
-// RevokeAPIKey revokes an API key (DELETE /v1/api-keys/{id}, 204).
+// RevokeAPIKey deletes /v1/api-keys/{id}. webhookd no longer serves that route, so the call fails
+// with a 404 at runtime rather than revoking anything. Revoke keys in your NimbusNexus account
+// console.
 func (c *Client) RevokeAPIKey(ctx context.Context, id string) error {
 	resp, err := c.do(ctx, http.MethodDelete, "/v1/api-keys/"+url.PathEscape(id), nil, nil, nil)
 	if err != nil {

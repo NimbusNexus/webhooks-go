@@ -38,8 +38,9 @@ type Endpoint struct {
 	UpdatedAt         *string           `json:"updated_at,omitempty"`
 }
 
-// ApiKey is an API key, as returned by POST /v1/api-keys (webhookd's ApiKeyOut). Key is present
-// ONLY on the create response (returned exactly once).
+// ApiKey is the shape POST /v1/api-keys returned (webhookd's ApiKeyOut). webhookd has deleted that
+// route; the struct remains the return type of CreateAPIKey, which now fails with a 404. Key was
+// present ONLY on the create response.
 type ApiKey struct {
 	Id        string  `json:"id"`
 	Name      string  `json:"name"`

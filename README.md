@@ -1,6 +1,6 @@
 # webhooks-go (Go)
 
-Official Go SDK for **NimbusNexus Webhooks** — publish events, manage your endpoints / keys /
+Official Go SDK for **NimbusNexus Webhooks** — publish events, manage your endpoints and
 deliveries, and verify the webhooks you receive. The core client is zero-dependency (standard library
 only); Go ≥ 1.25 (the optional outbox store drivers raise the module's minimum — see below).
 
@@ -84,7 +84,7 @@ import (
 )
 
 func main() {
-	wh := webhooks.New("https://webhooks.example.com", "whsk_…")
+	wh := webhooks.New("https://webhooks.example.com", "eyJ…")
 
 	event, err := wh.Publish(context.Background(), "order.created",
 		map[string]any{"order_id": "ord_123", "total": 4200},
@@ -100,6 +100,17 @@ func main() {
 	fmt.Println(event.EventUID, event.DeliveriesCreated)
 }
 ```
+
+The API key comes from **NimbusNexus Identity**, not from webhookd — mint one in your NimbusNexus
+account console under **API keys**, choosing **Webhooks** as the product. Pick one scope: `admin`
+(full control), `publish` (produce events, read nothing) or `read` (read everything, produce
+nothing) — `publish` and `read` are disjoint, not a ladder — and optionally confine the key to a
+single project. The key is a JWT, so it starts with `eyJ…`; the SDK sends it as
+`Authorization: Bearer <key>`, exactly as before.
+
+**A `whsk_…` key no longer authenticates.** webhookd no longer issues or accepts that key family, so
+an old `whsk_…` key is now refused like any unrecognised credential. Mint a replacement in the
+account console.
 
 `New` accepts functional options: `WithTimeout(time.Duration)` (default 10s), `WithMaxRetries(int)`
 (default 2), and `WithHTTPClient(*http.Client)`. Transient failures (connection errors, `429`, and
@@ -150,7 +161,7 @@ func main() {
 	}
 	defer store.Close()
 
-	wh := webhooks.New("https://webhooks.example.com", "whsk_…",
+	wh := webhooks.New("https://webhooks.example.com", "eyJ…",
 		webhooks.WithStore(store),
 		webhooks.WithMaxAttempts(10), // retry budget before a record is parked dead (default 10)
 		webhooks.WithOnDead(func(r webhooks.Record) {
@@ -206,16 +217,16 @@ The core `webhooks` package stays stdlib-only. The three driver stores live in *
 dependencies are only compiled into your binary if you actually import the subpackage, so a consumer
 who only uses the core SDK never pulls them in.
 
-## Manage endpoints, keys & deliveries (operators)
+## Manage endpoints & deliveries (operators)
 
-The same `Client` wraps the control-plane API — register receivers, mint keys, and drain the
-dead-letter queue from code (needs an **admin**-scoped key). Management methods return typed structs
-(`*Endpoint`, `*ApiKey`, `*Delivery`); list methods return a `*Page[T]` (`Items` + `NextOffset`);
-`DeleteEndpoint` / `RevokeAPIKey` return just an `error` (a `204`).
+The same `Client` wraps the control-plane API — register receivers and drain the dead-letter queue
+from code (needs an **admin**-scoped key). Management methods return typed structs (`*Endpoint`,
+`*Delivery`); list methods return a `*Page[T]` (`Items` + `NextOffset`); `DeleteEndpoint` returns
+just an `error` (a `204`).
 
 ```go
 ctx := context.Background()
-wh := webhooks.New("https://webhooks.example.com", "whsk_admin_…")
+wh := webhooks.New("https://webhooks.example.com", "eyJ…") // an admin-scoped key
 
 // --- Endpoints ---------------------------------------------------------------
 // Create a receiver — its signing secret is in the response exactly once, so persist it now.
@@ -236,11 +247,6 @@ wh.RotateEndpointSecret(ctx, endpointID) // returns the new secret, once
 wh.EnableEndpoint(ctx, endpointID)       // recover an auto-disabled endpoint
 wh.DeleteEndpoint(ctx, endpointID)       // -> error only (204)
 
-// --- API keys ----------------------------------------------------------------
-key, _ := wh.CreateAPIKey(ctx, &webhooks.CreateAPIKeyOptions{Name: "ci-publisher", Scope: "publish"})
-fmt.Println(*key.Key)          // shown once
-wh.RevokeAPIKey(ctx, key.Id)   // -> error only (204)
-
 // --- Deliveries / dead-letter recovery ---------------------------------------
 dead, _ := wh.ListDeliveries(ctx, &webhooks.ListDeliveriesOptions{Status: "dead"})
 for _, d := range dead.Items {
@@ -250,6 +256,10 @@ for _, d := range dead.Items {
 
 Optional outbound scalar fields (e.g. `Description`, `MaxAttempts`) are pointers, so only the ones you
 set are serialized. `ptr` above is a tiny helper — `func ptr[T any](v T) *T { return &v }`.
+
+`CreateAPIKey` and `RevokeAPIKey` are still on the client and still compile, but webhookd has deleted
+`/v1/api-keys`, so both fail with a `404` at runtime. Mint and revoke keys in your NimbusNexus
+account console under **API keys**, choosing **Webhooks** as the product.
 
 ## CLI
 
@@ -281,9 +291,6 @@ nn-webhooks endpoints rotate-secret <id>
 nn-webhooks endpoints enable <id>
 nn-webhooks endpoints delete <id>
 
-nn-webhooks keys create --name ci-publisher --scope publish --expires-in-days 90
-nn-webhooks keys revoke <id>
-
 nn-webhooks deliveries list --status dead
 nn-webhooks deliveries redeliver <id>
 
@@ -296,6 +303,10 @@ nn-webhooks version
 Successful results print as indented JSON to stdout; errors go to stderr and the process exits
 non-zero (an API error renders as `code: message`).
 
+`nn-webhooks keys create` and `nn-webhooks keys revoke` are still in the binary, but they call the
+deleted `/v1/api-keys` routes and fail with a `404`. Mint and revoke keys in your NimbusNexus account
+console under **API keys**, choosing **Webhooks** as the product.
+
 ## Examples
 
 [`examples/receiver`](./examples/receiver) is a runnable `net/http` server that verifies incoming
@@ -304,7 +315,7 @@ from environment variables:
 
 ```sh
 WEBHOOKD_SIGNING_SECRET=whsec_… go run ./examples/receiver           # a verifying receiver on :8080
-WEBHOOKD_URL=… WEBHOOKD_API_KEY=whsk_… go run ./examples/publish     # publish one event
+WEBHOOKD_URL=… WEBHOOKD_API_KEY=eyJ… go run ./examples/publish       # publish one event
 ```
 
 ## Develop

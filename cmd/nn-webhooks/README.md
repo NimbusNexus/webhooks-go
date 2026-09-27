@@ -20,8 +20,8 @@ Any other platform: archives and a `checksums.txt` are attached to every
 version, so there is no version-agnostic download URL — take the one matching your platform:
 
 ```bash
-curl -sSLO https://github.com/NimbusNexus/webhooks-go/releases/download/v0.5.1/nn-webhooks_0.5.1_linux_amd64.tar.gz
-tar xzf nn-webhooks_0.5.1_linux_amd64.tar.gz
+curl -sSLO https://github.com/NimbusNexus/webhooks-go/releases/download/v0.5.2/nn-webhooks_0.5.2_linux_amd64.tar.gz
+tar xzf nn-webhooks_0.5.2_linux_amd64.tar.gz
 ```
 
 ## Configure
@@ -45,9 +45,16 @@ For CI, skip the file entirely:
 
 ```bash
 export NN_WEBHOOKS_URL=https://api.webhooks.example.com
-export NN_WEBHOOKS_API_KEY=whsk_...
+export NN_WEBHOOKS_API_KEY=eyJ...
 nn-webhooks deliveries list --status dead
 ```
+
+The API key comes from **NimbusNexus Identity**, not from webhookd — mint one in your NimbusNexus
+account console under **API keys**, choosing **Webhooks** as the product, with one scope (`admin`,
+`publish` or `read`) and optionally a single project. It is a JWT, so it starts with `eyJ…`.
+**A `whsk_…` key no longer authenticates** — webhookd no longer issues or accepts that key family,
+and an old one is refused like any unrecognised credential. Mint a replacement in the account
+console.
 
 Precedence is `--api-key` > `$NN_WEBHOOKS_API_KEY` > profile, and **`whoami` reports which one
 won**. That matters more than it sounds: a stale environment variable silently shadowing the
@@ -69,15 +76,16 @@ nn-webhooks endpoints rotate-secret ep_123
 nn-webhooks endpoints enable ep_123              # recover an auto-disabled endpoint
 nn-webhooks endpoints delete ep_123
 
-nn-webhooks keys create --name ci --scope publish --expires-in-days 90
-nn-webhooks keys revoke key_123
-
 nn-webhooks deliveries list --status dead
 nn-webhooks deliveries redeliver dlv_456
 
 # Verify a received webhook — the raw body comes from stdin; prints "ok"/"failed", exits 0/1:
 nn-webhooks verify --secret whsec_... --signature sha256=... --timestamp "$TS" < body.json
 ```
+
+There is still a `keys` command — `keys create` and `keys revoke` are in the binary and still parse
+their flags — but both call `/v1/api-keys`, which webhookd has deleted, so they fail with a `404`.
+Mint and revoke keys in the account console, as above.
 
 Subscriptions are `kind:pattern` and the flag repeats — `prefix:deploy.`, `exact:deploy.completed`,
 `suffix:.failed`. A value with no colon is a bare match kind with an empty pattern, which is how you
