@@ -8,26 +8,52 @@ reason it is Go: an operator is often on a box that has nothing on it.
 ## Install
 
 ```bash
-# macOS / Linux
+# macOS — the tap ships a cask, and Homebrew installs casks only on macOS
 brew install nimbusnexus/tap/nn-webhooks
 
-# with a Go toolchain
+# with a Go toolchain (1.25 or later)
 go install github.com/NimbusNexus/webhooks-go/cmd/nn-webhooks@latest
 ```
 
-Any other platform: archives and a `checksums.txt` are attached to every
-[release](https://github.com/NimbusNexus/webhooks-go/releases). The archive name carries the
-version, so there is no version-agnostic download URL — take the one matching your platform:
+Linux, or macOS without Homebrew: archives and a `checksums.txt` are attached to every
+[release](https://github.com/NimbusNexus/webhooks-go/releases). This finds the newest one, checks
+the archive against the checksums and puts the binary on your `PATH`. Set `OS` to `linux` or
+`darwin` and `ARCH` to `amd64` or `arm64`:
 
 ```bash
-curl -sSLO https://github.com/NimbusNexus/webhooks-go/releases/download/v0.5.2/nn-webhooks_0.5.2_linux_amd64.tar.gz
-tar xzf nn-webhooks_0.5.2_linux_amd64.tar.gz
+OS=linux ARCH=amd64
+VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/NimbusNexus/webhooks-go/releases/latest | sed 's#.*/tag/v##')
+BASE=https://github.com/NimbusNexus/webhooks-go/releases/download/v$VERSION
+curl -fsSLO "$BASE/nn-webhooks_${VERSION}_${OS}_${ARCH}.tar.gz"
+curl -fsSLO "$BASE/checksums.txt"
+shasum -a 256 --check --ignore-missing checksums.txt
+tar -xzf "nn-webhooks_${VERSION}_${OS}_${ARCH}.tar.gz" nn-webhooks
+sudo install -m 0755 nn-webhooks /usr/local/bin/nn-webhooks
+nn-webhooks version
 ```
+
+Windows takes the `.zip` archive from the same release; the
+[setup guide](https://nimbusnexus.net/docs/setup/cli#windows) has the PowerShell steps.
+
+## Sign in
+
+```bash
+nn-webhooks login                     # opens the browser; approve, and the key is saved
+nn-webhooks whoami                    # workspace, key name, permissions, expiry, and the source
+nn-webhooks logout                    # revokes that key and deletes the profile
+```
+
+`login` prints a code and opens your NimbusNexus account console (`--no-browser` prints the link
+instead, for SSH sessions). Sign in, check the code matches, and approve: a workspace owner or
+admin can choose the permissions and, optionally, one project. The CLI then saves an API key named
+`nn-webhooks on <hostname>`, valid for 90 days and listed under **API keys** in the console, to the
+profile. Against another stand, pass its Webhooks URL (`--url https://webhooks.dev.example.com`);
+the account console is the same host with `account.` in place of `webhooks.`, or `--account-url`.
 
 ## Configure
 
 ```bash
-nn-webhooks configure                 # prompts for URL + API key
+nn-webhooks configure                 # prompts for URL + API key you already have
 nn-webhooks whoami                    # what would be used, and where it came from
 ```
 
@@ -72,6 +98,7 @@ nn-webhooks endpoints list                       # add --project-id to scope it
 nn-webhooks endpoints create --url https://example.com/hook --subscribe prefix:deploy.
 nn-webhooks endpoints get ep_123
 nn-webhooks endpoints update ep_123 --set max_attempts=10 --set status=disabled
+nn-webhooks endpoints replace-subscriptions ep_123 --subscribe exact:deploy.completed --subscribe suffix:.failed
 nn-webhooks endpoints rotate-secret ep_123
 nn-webhooks endpoints enable ep_123              # recover an auto-disabled endpoint
 nn-webhooks endpoints delete ep_123
@@ -91,6 +118,10 @@ Subscriptions are `kind:pattern` and the flag repeats — `prefix:deploy.`, `exa
 `suffix:.failed`. A value with no colon is a bare match kind with an empty pattern, which is how you
 subscribe to everything: `--subscribe all`. Values given to `--set` are JSON-coerced, falling back to
 a string; use `null` to clear a field.
+
+`update` cannot change subscriptions, because webhookd ignores them on a PATCH. `replace-subscriptions`
+sets the whole list at once, replacing what was there, and `--none` unsubscribes the endpoint from
+everything.
 
 Every command that returns data prints JSON, so it pipes into `jq` without a `--format` flag to
 remember. The exception is `verify`, which prints `ok`/`failed` and exits 0/1 so it can be used

@@ -4,7 +4,8 @@
 // Configuration (base URL + API key) is resolved in order:
 //  1. the global --url / --api-key flags,
 //  2. the NN_WEBHOOKS_URL / NN_WEBHOOKS_API_KEY environment variables,
-//  3. the config file at $XDG_CONFIG_HOME/nn-webhooks/credentials.json (written by `nn-webhooks configure`).
+//  3. the config file at $XDG_CONFIG_HOME/nn-webhooks/credentials.json (written by
+//     `nn-webhooks login` or `nn-webhooks configure`).
 //
 // Successful results are printed as indented JSON to stdout; errors go to stderr and
 // the process exits non-zero. An *webhooks.APIError is rendered as "code: message".
@@ -13,6 +14,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -22,8 +24,10 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"time"
 
 	webhooks "github.com/NimbusNexus/webhooks-go"
+	"github.com/NimbusNexus/webhooks-go/internal/credentials"
 )
 
 func main() {
@@ -62,6 +66,10 @@ func main() {
 	case "verify":
 		cmdVerify(rest) // handles its own exit codes (0 ok / 1 failed / 2 usage)
 		return
+	case "login":
+		err = cmdLogin(ctx, rest, *urlFlag, *profileFlag)
+	case "logout":
+		err = cmdLogout(ctx, rest, *profileFlag)
 	case "configure":
 		err = cmdConfigure(rest, *urlFlag, *keyFlag, *profileFlag)
 	case "whoami":
@@ -204,7 +212,7 @@ func cmdConfigure(args []string, gURL, gKey, gProfile string) error {
 	if err != nil {
 		return err
 	}
-	st.Profiles[name] = profile{URL: baseURL, Kind: "api_key", APIKey: apiKey}
+	st.Profiles[name] = profile{URL: baseURL, Kind: credentials.KindAPIKey, APIKey: apiKey}
 	path, err := saveStore(st)
 	if err != nil {
 		return err
@@ -226,17 +234,63 @@ func cmdWhoami(gURL, gKey, gProfile string) error {
 	if err != nil {
 		return err
 	}
+	return printJSON(describe(cred, time.Now()))
+}
+
+// describe is whoami's output: where the key came from, and what it is for. The key's claims are
+// read without verifying them; Identity's signature is the products' business, not this report's.
+func describe(cred resolved, now time.Time) map[string]any {
 	suffix := cred.APIKey
 	if len(suffix) > 4 {
 		suffix = suffix[len(suffix)-4:]
 	}
-	return printJSON(map[string]string{
+	out := map[string]any{
 		"profile":    cred.Profile,
 		"url":        cred.URL,
 		"kind":       cred.Kind,
 		"source":     cred.Source,
 		"key_suffix": suffix,
-	})
+	}
+	if cred.Stored.KeyName != "" {
+		out["key_name"] = cred.Stored.KeyName
+	}
+	if cred.Stored.WorkspaceName != "" {
+		out["workspace"] = cred.Stored.WorkspaceName
+	}
+	claims := unverifiedClaims(cred.APIKey)
+	for claim, field := range map[string]string{
+		"jti":          "key_id",
+		"workspace_id": "workspace_id",
+		"scope":        "scope",
+		"project":      "project",
+	} {
+		if v, ok := claims[claim].(string); ok && v != "" {
+			out[field] = v
+		}
+	}
+	if exp, ok := claims["exp"].(float64); ok {
+		at := time.Unix(int64(exp), 0).UTC()
+		out["expires_at"] = at.Format(time.RFC3339)
+		out["expired"] = !now.Before(at)
+	}
+	return out
+}
+
+// unverifiedClaims decodes a JWT's payload, or returns nil for anything that is not one.
+func unverifiedClaims(token string) map[string]any {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims map[string]any
+	if json.Unmarshal(payload, &claims) != nil {
+		return nil
+	}
+	return claims
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +374,8 @@ func cmdEndpoints(ctx context.Context, args []string, gURL, gKey, gProfile strin
 		return endpointsRotateSecret(ctx, rest, gURL, gKey, gProfile)
 	case "enable":
 		return endpointsEnable(ctx, rest, gURL, gKey, gProfile)
+	case "replace-subscriptions":
+		return endpointsReplaceSubscriptions(ctx, rest, gURL, gKey, gProfile)
 	default:
 		fmt.Fprintf(os.Stderr, "nn-webhooks endpoints: unknown subcommand %q\n\n", sub)
 		printEndpointsUsage(os.Stderr)
@@ -434,6 +490,9 @@ func endpointsUpdate(ctx context.Context, args []string, gURL, gKey, gProfile st
 		if key == "" {
 			return fmt.Errorf("endpoints update: invalid --set %q (empty key)", kv)
 		}
+		if key == "subscriptions" {
+			return errors.New("endpoints update: webhookd ignores subscriptions on update; use endpoints replace-subscriptions")
+		}
 		patch[key] = coerceJSON(raw)
 	}
 
@@ -476,6 +535,32 @@ func endpointsEnable(ctx context.Context, args []string, gURL, gKey, gProfile st
 		return err
 	}
 	ep, err := client.EnableEndpoint(ctx, id)
+	if err != nil {
+		return err
+	}
+	return printJSON(ep)
+}
+
+func endpointsReplaceSubscriptions(ctx context.Context, args []string, gURL, gKey, gProfile string) error {
+	fs := newFlagSet("nn-webhooks endpoints replace-subscriptions", "Usage: nn-webhooks endpoints replace-subscriptions <id> (--subscribe kind:pattern... | --none)\n\nReplaces the endpoint's whole subscription set; --none unsubscribes it from every event type.")
+	var subs stringList
+	fs.Var(&subs, "subscribe", "subscription as kind:pattern (repeatable)")
+	none := fs.Bool("none", false, "unsubscribe from every event type")
+	id, client, err := requireIDAndClient(fs, args, gURL, gKey, gProfile)
+	if err != nil {
+		return err
+	}
+	if len(subs) == 0 && !*none {
+		return errors.New("endpoints replace-subscriptions: pass --subscribe kind:pattern (repeatable), or --none to unsubscribe from everything")
+	}
+	if len(subs) > 0 && *none {
+		return errors.New("endpoints replace-subscriptions: --none cannot be combined with --subscribe")
+	}
+	replacement := []webhooks.Subscription{}
+	for _, s := range subs {
+		replacement = append(replacement, parseSubscription(s))
+	}
+	ep, err := client.ReplaceSubscriptions(ctx, id, replacement)
 	if err != nil {
 		return err
 	}
@@ -777,10 +862,12 @@ Global flags:
   --profile NAME    Named credential profile (env NN_WEBHOOKS_PROFILE, default "default")
 
 Commands:
-  configure     Save base URL + API key to the credentials file (see below)
-  whoami        Show the resolved URL + key, and which source supplied each
+  login         Sign in through the browser; saves a named, revocable API key to the profile
+  logout        Revoke the key login saved, and delete the profile
+  configure     Save a base URL + API key you already have to the credentials file
+  whoami        Show the resolved URL + key, which source supplied each, and what the key is for
   publish       Publish an event
-  endpoints     Manage endpoints (list, get, create, update, delete, rotate-secret, enable)
+  endpoints     Manage endpoints (list, get, create, update, replace-subscriptions, delete, rotate-secret, enable)
   keys          API-key commands — webhookd deleted these routes; they now fail (404)
   deliveries    Inspect deliveries (list, redeliver)
   verify        Verify a webhook signature (body read from stdin)
@@ -789,9 +876,9 @@ Commands:
 Run "nn-webhooks <command> --help" for command-specific help.
 
 Configuration is resolved in order: flags, then the NN_WEBHOOKS_URL / NN_WEBHOOKS_API_KEY
-environment variables, then $XDG_CONFIG_HOME/nn-webhooks/credentials.json — falling back to
-~/.config/nn-webhooks/credentials.json when XDG_CONFIG_HOME is unset. Run whoami to see which
-source won.
+environment variables, then $XDG_CONFIG_HOME/nn-webhooks/credentials.json (written by login or
+configure) — falling back to ~/.config/nn-webhooks/credentials.json when XDG_CONFIG_HOME is unset.
+Run whoami to see which source won.
 `)
 }
 
@@ -803,6 +890,7 @@ Subcommands:
   get <id>                             Fetch an endpoint
   create --url URL [flags]             Create an endpoint
   update <id> --set key=value ...      Update an endpoint (JSON-coerced values)
+  replace-subscriptions <id> [flags]   Replace the subscription set (update cannot change it)
   delete <id>                          Delete an endpoint
   rotate-secret <id>                   Rotate the signing secret
   enable <id>                          Re-enable a disabled endpoint

@@ -132,6 +132,11 @@ wh.Publish(ctx, "order.created", payload, nil)                                  
 wh.Publish(ctx, "order.created", payload, &webhooks.PublishOptions{ProjectID: "prj_3f9a"})
 ```
 
+With an empty URL or key, `webhooks.New("", "")` reads `$NN_WEBHOOKS_URL` / `$NN_WEBHOOKS_API_KEY`, then the
+profile `nn-webhooks login` saved (`webhooks.WithProfile("staging")` picks another);
+`webhooks.LoadCredentials` says what it found. CI should still pass a key minted in the account
+console.
+
 ## Outbox / durable buffering (producers)
 
 `Publish` calls webhookd synchronously — if webhookd is unreachable it returns an error and the event
@@ -243,6 +248,9 @@ wh.GetEndpoint(ctx, endpointID)
 // PATCH — send only the keys you want to change (an omitted key is unchanged, an explicit nil clears):
 wh.UpdateEndpoint(ctx, endpointID, webhooks.Patch{"max_attempts": 10, "status": "disabled"})
 
+// Subscriptions are not patchable: PUT the whole set (an empty slice unsubscribes from everything).
+wh.ReplaceSubscriptions(ctx, endpointID, []webhooks.Subscription{{MatchKind: "exact", Pattern: "order.paid"}})
+
 wh.RotateEndpointSecret(ctx, endpointID) // returns the new secret, once
 wh.EnableEndpoint(ctx, endpointID)       // recover an auto-disabled endpoint
 wh.DeleteEndpoint(ctx, endpointID)       // -> error only (204)
@@ -273,12 +281,13 @@ go install github.com/NimbusNexus/webhooks-go/cmd/nn-webhooks@latest # with a Go
 
 Configuration (base URL + API key) is resolved in order: the `--url` / `--api-key` flags, then the
 `NN_WEBHOOKS_URL` / `NN_WEBHOOKS_API_KEY` environment variables, then the profile written by
-`nn-webhooks configure` to `$XDG_CONFIG_HOME/nn-webhooks/credentials.json` (mode `0600`). Credentials
+`nn-webhooks login` or `nn-webhooks configure` to `$XDG_CONFIG_HOME/nn-webhooks/credentials.json` (mode `0600`). Credentials
 are stored as **named profiles**, so a second deployment is `--profile staging` rather than
 overwriting the first, and `nn-webhooks whoami` reports which source won.
 
 ```sh
-nn-webhooks configure                                # prompts for base URL + API key
+nn-webhooks login                                    # browser sign-in; saves a named, revocable key
+nn-webhooks configure                                # or: prompts for a base URL + API key you have
 nn-webhooks whoami                                   # what would be used, and where it came from
 nn-webhooks publish order.created --data '{"id":123}' --idempotency-key order-123
 
@@ -287,6 +296,7 @@ nn-webhooks endpoints list                    # the workspace's default project
 nn-webhooks endpoints list --project-id prj_3f9a
 nn-webhooks endpoints get <id>
 nn-webhooks endpoints update <id> --set max_attempts=10 --set status=disabled  # values are JSON-coerced
+nn-webhooks endpoints replace-subscriptions <id> --subscribe exact:order.paid --subscribe prefix:invoice.
 nn-webhooks endpoints rotate-secret <id>
 nn-webhooks endpoints enable <id>
 nn-webhooks endpoints delete <id>

@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -39,6 +42,39 @@ func writeJSON(t *testing.T, w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		t.Fatalf("encode response: %v", err)
 	}
+}
+
+// webhookdResponse returns a body webhookd's own app sent, byte for byte (fixtures/gen_responses.py).
+func webhookdResponse(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "webhookd-responses.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fixture struct {
+		Responses map[string]string `json:"responses"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	body, ok := fixture.Responses[name]
+	if !ok {
+		t.Fatalf("fixture has no %q response", name)
+	}
+	return body
+}
+
+// serveBody answers every request with body, verbatim, after check (if any) sees the request.
+func serveBody(t *testing.T, status int, body string, check func(*http.Request)) *Client {
+	t.Helper()
+	return newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if check != nil {
+			check(r)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	})
 }
 
 // projectID is an opaque project id — webhookd addresses projects by id, never by slug.
@@ -134,6 +170,17 @@ func TestPublishSetsIdempotencyKeyAndSource(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
+	}
+}
+
+func TestPublishReadsSkippedUnverified(t *testing.T) {
+	c := serveBody(t, http.StatusCreated, webhookdResponse(t, "event_withheld"), nil)
+	ev, err := c.Publish(bg(), "order.paid", map[string]any{"id": 2}, nil)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if ev.DeliveriesCreated != 0 || ev.SkippedUnverified != 1 {
+		t.Errorf("deliveries_created = %d, skipped_unverified = %d, want 0 and 1", ev.DeliveriesCreated, ev.SkippedUnverified)
 	}
 }
 
@@ -298,6 +345,115 @@ func TestCreateEndpointRequestShapeAndSecret(t *testing.T) {
 	}
 	if ep.ProjectID != projectID {
 		t.Errorf("project_id = %q, want %q", ep.ProjectID, projectID)
+	}
+}
+
+func TestCreateEndpointDecodesWebhookdsRetrySchedule(t *testing.T) {
+	c := serveBody(t, http.StatusCreated, webhookdResponse(t, "endpoint_created"), nil)
+	ep, err := c.CreateEndpoint(bg(), "https://x.test/in", nil)
+	if err != nil {
+		t.Fatalf("CreateEndpoint: %v", err)
+	}
+	if ep.Secret == nil || *ep.Secret != "whsec_shown_once" {
+		t.Errorf("secret = %v, want the one-time secret", ep.Secret)
+	}
+	if !slices.Equal(ep.RetrySchedule, []float64{0, 30, 300}) {
+		t.Errorf("retry_schedule = %v, want [0 30 300]", ep.RetrySchedule)
+	}
+	if ep.Health != "healthy" || ep.Verified || ep.GatedUnverified || ep.AutoDisableThreshold != 20 {
+		t.Errorf("health fields = %q verified=%v gated=%v threshold=%d", ep.Health, ep.Verified, ep.GatedUnverified, ep.AutoDisableThreshold)
+	}
+	if !slices.Equal(ep.CustomHeaderNames, []string{"X-Tenant"}) {
+		t.Errorf("custom_header_names = %v", ep.CustomHeaderNames)
+	}
+	if ep.MaxAttempts == nil || *ep.MaxAttempts != 5 || ep.DeliveryTimeoutMs == nil || *ep.DeliveryTimeoutMs != 5000 {
+		t.Errorf("max_attempts = %v, delivery_timeout_ms = %v", ep.MaxAttempts, ep.DeliveryTimeoutMs)
+	}
+}
+
+func TestEveryEndpointMethodDecodesWebhookdsBody(t *testing.T) {
+	body := webhookdResponse(t, "endpoint_subscriptions_replaced")
+	calls := map[string]func(*Client) (*Endpoint, error){
+		"GetEndpoint": func(c *Client) (*Endpoint, error) { return c.GetEndpoint(bg(), "ep_1") },
+		"UpdateEndpoint": func(c *Client) (*Endpoint, error) {
+			return c.UpdateEndpoint(bg(), "ep_1", Patch{"description": "orders"})
+		},
+		"RotateEndpointSecret": func(c *Client) (*Endpoint, error) { return c.RotateEndpointSecret(bg(), "ep_1") },
+		"EnableEndpoint":       func(c *Client) (*Endpoint, error) { return c.EnableEndpoint(bg(), "ep_1") },
+		"ReplaceSubscriptions": func(c *Client) (*Endpoint, error) {
+			return c.ReplaceSubscriptions(bg(), "ep_1", []Subscription{{MatchKind: "exact", Pattern: "order.paid"}})
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			ep, err := call(serveBody(t, http.StatusOK, body, nil))
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if !slices.Equal(ep.RetrySchedule, []float64{0, 30, 300}) || len(ep.Subscriptions) != 2 || ep.Secret != nil {
+				t.Errorf("endpoint = %+v", ep)
+			}
+		})
+	}
+}
+
+func TestListEndpointsDecodesWebhookdsPage(t *testing.T) {
+	c := serveBody(t, http.StatusOK, webhookdResponse(t, "endpoint_page"), nil)
+	page, err := c.ListEndpoints(bg(), nil)
+	if err != nil {
+		t.Fatalf("ListEndpoints: %v", err)
+	}
+	if len(page.Items) != 1 || page.NextOffset != nil {
+		t.Fatalf("page = %+v", page)
+	}
+	ep := page.Items[0]
+	if ep.Health != "gated" || !ep.GatedUnverified || ep.Verified {
+		t.Errorf("health = %q gated_unverified = %v verified = %v, want a gated, unverified endpoint", ep.Health, ep.GatedUnverified, ep.Verified)
+	}
+	if !slices.Equal(ep.RetrySchedule, []float64{0, 30, 300}) {
+		t.Errorf("retry_schedule = %v", ep.RetrySchedule)
+	}
+}
+
+func TestReplaceSubscriptionsRequestShape(t *testing.T) {
+	var got map[string]any
+	c := serveBody(t, http.StatusOK, webhookdResponse(t, "endpoint_subscriptions_replaced"), func(r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/endpoints/ep_1/subscriptions" {
+			t.Errorf("%s %s, want PUT /v1/endpoints/ep_1/subscriptions", r.Method, r.URL.Path)
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
+		got = decodeBody(t, r)
+	})
+	subs := []Subscription{{MatchKind: "exact", Pattern: "order.paid"}, {MatchKind: "prefix", Pattern: "invoice."}}
+	ep, err := c.ReplaceSubscriptions(bg(), "ep_1", subs)
+	if err != nil {
+		t.Fatalf("ReplaceSubscriptions: %v", err)
+	}
+	sent, _ := got["subscriptions"].([]any)
+	if len(got) != 1 || len(sent) != 2 {
+		t.Fatalf("body = %v, want only the two subscriptions", got)
+	}
+	if first, _ := sent[0].(map[string]any); first["match_kind"] != "exact" || first["pattern"] != "order.paid" {
+		t.Errorf("subscriptions[0] = %v", sent[0])
+	}
+	if !slices.Equal(ep.Subscriptions, subs) {
+		t.Errorf("returned subscriptions = %v, want %v", ep.Subscriptions, subs)
+	}
+}
+
+func TestReplaceSubscriptionsWithNilSendsAnEmptyList(t *testing.T) {
+	var raw string
+	c := serveBody(t, http.StatusOK, webhookdResponse(t, "endpoint_subscriptions_replaced"), func(r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		raw = string(data)
+	})
+	if _, err := c.ReplaceSubscriptions(bg(), "ep_1", nil); err != nil {
+		t.Fatalf("ReplaceSubscriptions: %v", err)
+	}
+	if raw != `{"subscriptions":[]}` {
+		t.Errorf("body = %s, want {\"subscriptions\":[]} (webhookd rejects null)", raw)
 	}
 }
 
@@ -556,6 +712,27 @@ func TestListDeliveriesForwardsOnlyProvidedParams(t *testing.T) {
 	}
 	if page.NextOffset != nil {
 		t.Errorf("next_offset = %v, want nil", page.NextOffset)
+	}
+}
+
+func TestListDeliveriesDecodesWebhookdsDeliveryOut(t *testing.T) {
+	c := serveBody(t, http.StatusOK, webhookdResponse(t, "delivery_page"), nil)
+	page, err := c.ListDeliveries(bg(), nil)
+	if err != nil {
+		t.Fatalf("ListDeliveries: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %+v", page.Items)
+	}
+	d := page.Items[0]
+	if d.EventID == nil || *d.EventID != "evt_1" || d.Attempts == nil || *d.Attempts != 0 {
+		t.Errorf("event_id = %v, attempts = %v", d.EventID, d.Attempts)
+	}
+	if d.LastError != nil || d.SentAt != nil || d.NextAttemptAt == nil {
+		t.Errorf("last_error = %v, sent_at = %v, next_attempt_at = %v", d.LastError, d.SentAt, d.NextAttemptAt)
+	}
+	if d.ProjectID == nil || *d.ProjectID != projectID || d.EventSource == nil || *d.EventSource != "bootstrap" || d.EventCreatedAt == nil {
+		t.Errorf("event context = %v %v %v", d.ProjectID, d.EventSource, d.EventCreatedAt)
 	}
 }
 

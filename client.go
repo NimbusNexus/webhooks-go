@@ -15,7 +15,7 @@ import (
 )
 
 // Version tracks the release tag; keep in lockstep with the Python/TypeScript SDKs.
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 var retryStatuses = map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true}
 
@@ -29,6 +29,7 @@ var retryStatuses = map[int]bool{429: true, 500: true, 502: true, 503: true, 504
 type Client struct {
 	baseURL    string
 	apiKey     string
+	profile    string
 	timeout    time.Duration
 	maxRetries int
 	httpClient *http.Client
@@ -63,8 +64,16 @@ func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) { c.httpClient = h }
 }
 
+// WithProfile names the credentials-file profile New reads when baseURL or apiKey is empty
+// (default: $NN_WEBHOOKS_PROFILE, else "default").
+func WithProfile(name string) Option {
+	return func(c *Client) { c.profile = name }
+}
+
 // New creates a Client for the webhookd instance at baseURL authenticated with apiKey. Trailing
-// slashes are trimmed from baseURL.
+// slashes are trimmed from baseURL. An empty baseURL or apiKey is filled from LoadCredentials, so
+// New("", "") uses the environment or what `nn-webhooks login` saved; call LoadCredentials
+// directly to see why nothing was found.
 func New(baseURL, apiKey string, opts ...Option) *Client {
 	c := &Client{
 		baseURL:         strings.TrimRight(baseURL, "/"),
@@ -76,6 +85,16 @@ func New(baseURL, apiKey string, opts ...Option) *Client {
 	}
 	for _, opt := range opts {
 		opt(c)
+	}
+	if c.baseURL == "" || c.apiKey == "" {
+		if found, err := LoadCredentials(c.profile); err == nil {
+			if c.baseURL == "" {
+				c.baseURL = strings.TrimRight(found.URL, "/")
+			}
+			if c.apiKey == "" {
+				c.apiKey = found.APIKey
+			}
+		}
 	}
 	if c.httpClient == nil {
 		c.httpClient = &http.Client{Timeout: c.timeout}
@@ -191,7 +210,8 @@ func (c *Client) GetEndpoint(ctx context.Context, id string) (*Endpoint, error) 
 }
 
 // UpdateEndpoint partially updates an endpoint (PATCH /v1/endpoints/{id}). patch is sent verbatim:
-// an omitted key is left unchanged, an explicit nil clears the field.
+// an omitted key is left unchanged, an explicit nil clears the field. PATCH ignores
+// "subscriptions"; change those with ReplaceSubscriptions.
 func (c *Client) UpdateEndpoint(ctx context.Context, id string, patch Patch) (*Endpoint, error) {
 	resp, err := c.do(ctx, http.MethodPatch, "/v1/endpoints/"+url.PathEscape(id), patch, nil, nil)
 	if err != nil {
@@ -224,6 +244,21 @@ func (c *Client) RotateEndpointSecret(ctx context.Context, id string) (*Endpoint
 // (POST /v1/endpoints/{id}/enable).
 func (c *Client) EnableEndpoint(ctx context.Context, id string) (*Endpoint, error) {
 	resp, err := c.do(ctx, http.MethodPost, "/v1/endpoints/"+url.PathEscape(id)+"/enable", nil, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return decodeJSON[Endpoint](resp)
+}
+
+// ReplaceSubscriptions replaces an endpoint's whole subscription set
+// (PUT /v1/endpoints/{id}/subscriptions). An empty or nil slice unsubscribes the endpoint from every
+// event type.
+func (c *Client) ReplaceSubscriptions(ctx context.Context, id string, subscriptions []Subscription) (*Endpoint, error) {
+	if subscriptions == nil {
+		subscriptions = []Subscription{}
+	}
+	body := map[string]any{"subscriptions": subscriptions}
+	resp, err := c.do(ctx, http.MethodPut, "/v1/endpoints/"+url.PathEscape(id)+"/subscriptions", body, nil, nil)
 	if err != nil {
 		return nil, err
 	}
