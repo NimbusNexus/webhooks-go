@@ -70,6 +70,21 @@ constant-time comparison. See [`examples/receiver`](./examples/receiver) for a f
 `Sign(secret, body, timestamp)` produces the same `sha256=<hex>` signature the server sends; it's
 mainly useful for tests — subscribers call `Verify`.
 
+## Answer endpoint verification (subscribers)
+
+Where verification is required (always on the Free plan), webhookd delivers nothing to an endpoint
+until it passes: it sends a signed `webhook.verify` event carrying a random challenge, and the endpoint
+answers 2xx with that challenge in its body. Once `Verify` has accepted the request, one call answers it:
+
+```go
+if challenge, ok := webhooks.ChallengeResponse(body); ok {
+	w.Write([]byte(challenge))
+	return
+}
+```
+
+`ChallengeResponse` reports `false` for every other event, so the rest of your handler runs as before.
+
 ## Publish an event (producers)
 
 ```go

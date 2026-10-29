@@ -155,3 +155,34 @@ func TestVerifyNoTimestampSignsBodyOnly(t *testing.T) {
 		t.Fatal("expected a body-only signature to verify with nil options")
 	}
 }
+
+// verifyBody is the body webhookd POSTs to verify an endpoint (webhookd/delivery.py, API-3).
+const verifyBody = `{"type": "webhook.verify", "data": {"endpoint_id": "ep_1", "challenge": "Xb9kQ2"}}`
+
+func TestChallengeResponseReturnsTheChallenge(t *testing.T) {
+	if VerifyEventType != "webhook.verify" {
+		t.Fatalf("VerifyEventType = %q", VerifyEventType)
+	}
+	challenge, ok := ChallengeResponse([]byte(verifyBody))
+	if !ok || challenge != "Xb9kQ2" {
+		t.Fatalf("ChallengeResponse = %q, %v; want Xb9kQ2, true", challenge, ok)
+	}
+}
+
+func TestChallengeResponseRefusesAnythingElse(t *testing.T) {
+	for _, body := range []string{
+		string(testBody), // an ordinary delivery
+		"not json",
+		"[]",
+		"null",
+		`{"type": "webhook.verify"}`,
+		`{"type": "webhook.verify", "data": {"challenge": ""}}`,
+		`{"type": "webhook.verify", "data": {"challenge": 42}}`,
+		`{"type": "webhook.verify", "data": "Xb9kQ2"}`,
+		`{"type": "order.created", "data": {"challenge": "Xb9kQ2"}}`,
+	} {
+		if challenge, ok := ChallengeResponse([]byte(body)); ok || challenge != "" {
+			t.Errorf("ChallengeResponse(%s) = %q, %v; want \"\", false", body, challenge, ok)
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,9 @@ const (
 	signaturePrefix = "sha256="
 	// DefaultToleranceSeconds is webhookd's default replay window for signature verification.
 	DefaultToleranceSeconds = 300
+	// VerifyEventType is the event type webhookd sends to verify an endpoint (data.challenge
+	// carries the token).
+	VerifyEventType = "webhook.verify"
 )
 
 // signedBytes rebuilds the exact bytes webhookd signs: when a timestamp is given,
@@ -112,4 +116,31 @@ func Verify(secret string, body []byte, signature string, opts *VerifyOptions) b
 		}
 	}
 	return false
+}
+
+// ChallengeResponse returns the body that answers webhookd's endpoint-verification challenge, and
+// false when body is not one.
+//
+// webhookd verifies an endpoint by sending it a signed webhook.verify event whose data.challenge is
+// a random token; the endpoint passes by answering 2xx with that token in its body. Call this after
+// Verify has accepted the request:
+//
+//	if challenge, ok := webhooks.ChallengeResponse(body); ok {
+//		w.Write([]byte(challenge))
+//		return
+//	}
+func ChallengeResponse(body []byte) (string, bool) {
+	var event struct {
+		Type string `json:"type"`
+		Data struct {
+			Challenge string `json:"challenge"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &event); err != nil {
+		return "", false
+	}
+	if event.Type != VerifyEventType || event.Data.Challenge == "" {
+		return "", false
+	}
+	return event.Data.Challenge, true
 }
